@@ -40,6 +40,11 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def lifespan(app: FastAPI):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         migrate_database(settings.data_dir, settings.database_url)
+        try:
+            await service.import_existing_codex_sessions()
+        except Exception:
+            # Discovery is a convenience; diagnostics remain available if Codex is offline.
+            pass
         yield
         await engine.dispose()
 

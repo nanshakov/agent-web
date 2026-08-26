@@ -29,7 +29,8 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Create local configuration")
-    init.add_argument("--root", type=Path, action="append", required=True)
+    init.add_argument("--root", type=Path, action="append")
+    init.add_argument("--discover-codex", action="store_true", help="Discover Git project cwd values from local Codex chats")
     serve = commands.add_parser("serve", help="Run Agent Web")
     serve.add_argument("--allow-lan", action="store_true")
     serve.add_argument("--port", type=int, default=8765)
@@ -40,7 +41,17 @@ def main() -> None:
     data_dir: Path = args.data_dir
 
     if args.command == "init":
-        roots = [str(path.expanduser().resolve()) for path in args.root]
+        roots = [str(path.expanduser().resolve()) for path in args.root or []]
+        if args.discover_codex:
+            from agent_web.codex.sdk_backend import SdkCodexBackend
+
+            async def discover() -> list[str]:
+                return [item["cwd"] for item in await SdkCodexBackend().list_threads() if item.get("cwd")]
+
+            roots.extend(discover_root for discover_root in asyncio.run(discover()) if Path(discover_root).is_dir())
+        roots = list(dict.fromkeys(roots))
+        if not roots:
+            parser.error("init requires --root or --discover-codex")
         data_dir.mkdir(parents=True, exist_ok=True)
         config_path(data_dir).write_text(json.dumps({"roots": roots}, indent=2), "utf-8")
         print(f"Configured {len(roots)} allowed root(s) in {config_path(data_dir)}")

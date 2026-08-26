@@ -21,6 +21,8 @@ class CodexBackend(Protocol):
 
     async def start_thread(self, cwd: Path, *, model: str | None, sandbox: str) -> str: ...
 
+    async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]: ...
+
     async def run_turn(self, native_thread_id: str, prompt: str, *, sandbox: str) -> str: ...
 
     async def interrupt(self, native_thread_id: str) -> bool: ...
@@ -40,6 +42,9 @@ class UnavailableCodexBackend:
 
     async def start_thread(self, cwd: Path, *, model: str | None, sandbox: str) -> str:
         raise RuntimeError(self.reason)
+
+    async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]:
+        return []
 
     async def run_turn(self, native_thread_id: str, prompt: str, *, sandbox: str) -> str:
         raise RuntimeError(self.reason)

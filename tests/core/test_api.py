@@ -16,6 +16,9 @@ class FakeCodex:
     async def start_thread(self, cwd: Path, *, model, sandbox):
         return "fixture-thread"
 
+    async def list_threads(self, limit=100):
+        return []
+
     async def run_turn(self, native_thread_id, prompt, *, sandbox):
         return f"answered: {prompt}"
 

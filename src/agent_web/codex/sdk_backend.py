@@ -48,6 +48,18 @@ class SdkCodexBackend:
         self._threads[native_id] = thread
         return native_id
 
+    async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]:
+        codex = await self._client()
+        response = await codex.thread_list(limit=limit)
+        return [
+            {
+                "id": str(thread.id),
+                "cwd": str(thread.cwd.root) if thread.cwd else None,
+                "title": str(thread.name) if thread.name else None,
+            }
+            for thread in response.data
+        ]
+
     async def run_turn(self, native_thread_id: str, prompt: str, *, sandbox: str) -> str:
         from openai_codex import Sandbox  # type: ignore[import-not-found]
 
@@ -66,4 +78,3 @@ class SdkCodexBackend:
             return False
         await interrupt()
         return True
-

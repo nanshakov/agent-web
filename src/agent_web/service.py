@@ -39,6 +39,42 @@ class AgentService:
         async with self.session_factory() as db:
             return list((await db.scalars(select(Project).order_by(Project.name))).all())
 
+    async def import_existing_codex_sessions(self) -> int:
+        """Import only threads whose Git cwd is already inside an allowed root."""
+        threads = await self.backend.list_threads()
+        imported = 0
+        async with self.session_factory() as db:
+            for thread in threads:
+                cwd = thread.get("cwd")
+                native_id = thread.get("id")
+                if not cwd or not native_id:
+                    continue
+                path = Path(cwd).expanduser().resolve()
+                if not path.is_dir() or not (path / ".git").exists():
+                    continue
+                if not any(path.is_relative_to(root) for root in self.roots):
+                    continue
+                project = await db.scalar(select(Project).where(Project.path == str(path)))
+                if project is None:
+                    project = Project(name=path.name, path=str(path))
+                    db.add(project)
+                    await db.flush()
+                    db.add(AuditEvent(kind="project.discovered", subject_id=project.id))
+                existing = await db.scalar(
+                    select(AgentSession).where(AgentSession.native_thread_id == native_id)
+                )
+                if existing is None:
+                    db.add(AgentSession(
+                        project_id=project.id,
+                        native_thread_id=native_id,
+                        title=thread.get("title"),
+                    ))
+                    imported += 1
+            if imported:
+                db.add(AuditEvent(kind="codex.sessions_imported", detail=str(imported)))
+                await db.commit()
+        return imported
+
     async def create_session(self, project_id: str) -> AgentSession:
         async with self.session_factory() as db:
             project = await db.get(Project, project_id)
