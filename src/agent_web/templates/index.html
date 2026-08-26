@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Web</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <main>
+      <header><span class="eyebrow">LOCAL CODEX</span><h1>Agent Web</h1><p id="health">Checking Codex…</p></header>
+      {% if lan_mode %}<aside>LAN prototype: anyone on this network can control configured projects.</aside>{% endif %}
+      <section><h2>Projects</h2><div id="projects"></div></section>
+      <section><h2>Add project</h2><form id="project-form"><input name="name" placeholder="Name" required><input name="path" placeholder="Git working tree path" required><button>Add</button></form></section>
+      <section id="chat" hidden><h2 id="session-title">New session</h2><div id="messages"></div><form id="turn-form"><textarea name="prompt" placeholder="Ask Codex…" required></textarea><button>Send</button></form></section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

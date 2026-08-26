@@ -1,0 +1,37 @@
+[project]
+name = "agent-web"
+version = "0.1.0"
+description = "Mobile-first LAN Web UI for local Codex sessions."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Agent Web contributors" }]
+dependencies = [
+  "aiosqlite>=0.21,<1",
+  "alembic>=1.16,<2",
+  "fastapi>=0.116,<1",
+  "jinja2>=3.1,<4",
+  "openai-codex>=0.1",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.11,<3",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "pytest-asyncio>=0.24,<1"]
+
+[project.scripts]
+agent-web = "agent_web.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
