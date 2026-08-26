@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from agent_web.codex.sdk_backend import SdkCodexBackend
 from agent_web.config import Settings
 from agent_web.db.database import create_database, migrate_database
 from agent_web.service import AgentService
+from agent_web.updater import UpdateError, Updater
 
 
 class ProjectInput(BaseModel):
@@ -45,7 +47,28 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         except Exception:
             # Discovery is a convenience; diagnostics remain available if Codex is offline.
             pass
+        app.state.update_status = {"state": "not_configured"}
+
+        async def check_updates() -> None:
+            if not settings.update_repository_url:
+                return
+            app.state.update_status = {"state": "checking"}
+            try:
+                status = await asyncio.to_thread(Updater(Path(__file__).parents[2], settings).status)
+                app.state.update_status = {
+                    "state": "available" if status.available else "up_to_date",
+                    "current_commit": status.current_commit,
+                    "available_commit": status.available_commit,
+                    "commits": list(status.commits),
+                }
+            except UpdateError as error:
+                app.state.update_status = {"state": "error", "message": str(error)}
+            except Exception:
+                app.state.update_status = {"state": "error", "message": "Could not check for updates"}
+
+        update_task = asyncio.create_task(check_updates())
         yield
+        update_task.cancel()
         await engine.dispose()
 
     app = FastAPI(title="Agent Web", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -65,6 +88,10 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     @app.get("/api/v1/capabilities")
     async def capabilities():
         return backend.capabilities.__dict__
+
+    @app.get("/api/v1/update")
+    async def update_status():
+        return app.state.update_status
 
     @app.get("/api/v1/projects")
     async def projects():

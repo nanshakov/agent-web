@@ -52,3 +52,10 @@ def test_project_outside_allowed_root_is_rejected(tmp_path: Path):
     with TestClient(app) as client:
         response = client.post("/api/v1/projects", json={"name": "No", "path": str(rejected)})
     assert response.status_code == 422
+
+
+def test_update_endpoint_reports_not_configured(tmp_path: Path):
+    app = create_app(Settings(data_dir=tmp_path / "data"), backend=FakeCodex())
+    with TestClient(app) as client:
+        response = client.get("/api/v1/update")
+    assert response.json() == {"state": "not_configured"}
