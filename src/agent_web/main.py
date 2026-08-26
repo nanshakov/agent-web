@@ -42,12 +42,14 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def lifespan(app: FastAPI):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         migrate_database(settings.data_dir, settings.database_url)
-        try:
-            await service.import_existing_codex_sessions()
-        except Exception:
-            # Discovery is a convenience; diagnostics remain available if Codex is offline.
-            pass
         app.state.update_status = {"state": "not_configured"}
+
+        async def import_existing_sessions() -> None:
+            try:
+                await service.import_existing_codex_sessions()
+            except Exception:
+                # Discovery is a convenience; diagnostics remain available if Codex is offline.
+                pass
 
         async def check_updates() -> None:
             if not settings.update_repository_url:
@@ -66,8 +68,10 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             except Exception:
                 app.state.update_status = {"state": "error", "message": "Could not check for updates"}
 
+        import_task = asyncio.create_task(import_existing_sessions())
         update_task = asyncio.create_task(check_updates())
         yield
+        import_task.cancel()
         update_task.cancel()
         await engine.dispose()
 
