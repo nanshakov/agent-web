@@ -22,6 +22,7 @@ class Project(Base):
     path: Mapped[str] = mapped_column(String(2048), unique=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     reasoning: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    agent: Mapped[str] = mapped_column(String(40), default="codex")
     sandbox: Mapped[str] = mapped_column(String(40), default="workspace_write")
     approval_policy: Mapped[str] = mapped_column(String(40), default="ask")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -55,4 +56,3 @@ class AuditEvent(Base):
     subject_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     detail: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-

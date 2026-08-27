@@ -12,9 +12,10 @@ from agent_web.db.models import AgentSession, AuditEvent, Project, Turn
 
 
 class AgentService:
-    def __init__(self, session_factory: async_sessionmaker, backend: CodexBackend, roots: tuple[Path, ...]):
+    def __init__(self, session_factory: async_sessionmaker, backends: dict[str, CodexBackend] | CodexBackend,
+                 roots: tuple[Path, ...]):
         self.session_factory = session_factory
-        self.backend = backend
+        self.backends = backends if isinstance(backends, dict) else {"codex": backends}
         self.roots = tuple(root.resolve() for root in roots)
         self._active_projects: set[str] = set()
 
@@ -41,13 +42,14 @@ class AgentService:
             return list((await db.scalars(select(Project).order_by(Project.name))).all())
 
     async def update_project_agent_settings(
-        self, project_id: str, model: str | None, reasoning: str | None, sandbox: str,
+        self, project_id: str, agent: str, model: str | None, reasoning: str | None, sandbox: str,
         approval_policy: str,
     ) -> Project:
         async with self.session_factory() as db:
             project = await db.get(Project, project_id)
             if project is None:
                 raise LookupError("Project not found")
+            project.agent = agent
             project.model = model
             project.reasoning = reasoning
             project.sandbox = sandbox
@@ -59,7 +61,8 @@ class AgentService:
 
     async def import_existing_codex_sessions(self) -> int:
         """Import only threads whose Git cwd is already inside an allowed root."""
-        threads = await self.backend.list_threads()
+        backend = self.backends["codex"]
+        threads = await backend.list_threads()
         imported = 0
         async with self.session_factory() as db:
             for thread in threads:
@@ -123,7 +126,10 @@ class AgentService:
             project = await db.get(Project, project_id)
             if project is None:
                 raise LookupError("Project not found")
-            native_id = await self.backend.start_thread(
+            backend = self.backends.get(project.agent)
+            if backend is None:
+                raise ValueError(f"Agent '{project.agent}' is not available")
+            native_id = await backend.start_thread(
                 Path(project.path), model=project.model, sandbox=project.sandbox,
                 reasoning=project.reasoning, approval_policy=project.approval_policy,
             )
@@ -140,9 +146,25 @@ class AgentService:
             if session is None:
                 raise LookupError("Session not found")
             native_thread_id = session.native_thread_id
+            project = await db.get(Project, session.project_id)
+            stored_turns = list((await db.scalars(
+                select(Turn).where(Turn.session_id == session_id, Turn.status == "completed").order_by(Turn.created_at)
+            )).all())
         if native_thread_id.startswith("cline:"):
             return ClineHistory().messages(native_thread_id.removeprefix("cline:"))
-        return await self.backend.thread_history(native_thread_id)
+        backend = self.backends.get("opencode" if native_thread_id.startswith("opencode:") else "codex")
+        if backend is None:
+            raise RuntimeError("The agent for this session is not available")
+        register = getattr(backend, "register_thread", None)
+        if register is not None and project is not None:
+            register(native_thread_id, Path(project.path))
+        messages = await backend.thread_history(native_thread_id)
+        if messages:
+            return messages
+        return [item for turn in stored_turns for item in (
+            {"role": "user", "content": turn.prompt},
+            {"role": "assistant", "content": turn.response or ""},
+        )]
 
     async def create_turn(self, session_id: str, prompt: str, request_id: str) -> Turn:
         async with self.session_factory() as db:
@@ -164,7 +186,13 @@ class AgentService:
             await db.refresh(turn)
         self._active_projects.add(project.id)
         try:
-            response = await self.backend.run_turn(
+            backend = self.backends.get(project.agent)
+            if backend is None:
+                raise RuntimeError(f"Agent '{project.agent}' is not available")
+            register = getattr(backend, "register_thread", None)
+            if register is not None:
+                register(session.native_thread_id, Path(project.path))
+            response = await backend.run_turn(
                 session.native_thread_id, prompt, sandbox=project.sandbox
             )
             async with self.session_factory() as db:

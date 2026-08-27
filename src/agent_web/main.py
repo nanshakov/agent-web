@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from agent_web.cline import ClineHistory
 from agent_web.codex.base import UnavailableCodexBackend
 from agent_web.codex.sdk_backend import SdkCodexBackend
+from agent_web.opencode_acp import OpenCodeAcpBackend
 from agent_web.config import Settings
 from agent_web.db.database import create_database, migrate_database
 from agent_web.service import AgentService
@@ -30,6 +31,7 @@ class TurnInput(BaseModel):
 
 
 class ProjectAgentSettingsInput(BaseModel):
+    agent: str = "codex"
     model: str | None = Field(default=None, max_length=120)
     reasoning: str | None = Field(default=None, max_length=80)
     sandbox: str = "workspace_write"
@@ -42,8 +44,10 @@ def error(code: str, message: str, status: int) -> HTTPException:
 
 def create_app(settings: Settings, backend=None) -> FastAPI:
     engine, session_factory = create_database(settings.database_url)
-    backend = backend or SdkCodexBackend()
-    service = AgentService(session_factory, backend, settings.allowed_roots)
+    backends = backend if isinstance(backend, dict) else {"codex": backend} if backend is not None else {
+        "codex": SdkCodexBackend(), "opencode": OpenCodeAcpBackend(),
+    }
+    service = AgentService(session_factory, backends, settings.allowed_roots)
     templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
     @asynccontextmanager
@@ -95,17 +99,18 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
 
     @app.get("/api/v1/health")
     async def health():
-        ready, detail = await backend.health()
-        return {"status": "ready" if ready else "codex_unavailable", "codex": detail}
+        statuses = {name: await item.health() for name, item in backends.items()}
+        return {"status": "ready" if any(ready for ready, _ in statuses.values()) else "agent_unavailable",
+                "agents": {name: {"ready": ready, "detail": detail} for name, (ready, detail) in statuses.items()}}
 
     @app.get("/api/v1/capabilities")
     async def capabilities():
-        return backend.capabilities.__dict__
+        return {name: item.capabilities.__dict__ for name, item in backends.items()}
 
     @app.get("/api/v1/codex/status")
     async def codex_status():
         try:
-            models = await backend.models()
+            models = await backends["codex"].models()
         except Exception:
             models = []
         return {
@@ -124,7 +129,16 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def projects():
         rows = await service.list_projects()
         return [{"id": p.id, "name": p.name, "path": p.path, "sandbox": p.sandbox,
-                 "approval_policy": p.approval_policy, "model": p.model, "reasoning": p.reasoning} for p in rows]
+                 "approval_policy": p.approval_policy, "model": p.model, "reasoning": p.reasoning,
+                 "agent": p.agent} for p in rows]
+
+    @app.get("/api/v1/agents")
+    async def agents():
+        result = {}
+        for name, item in backends.items():
+            ready, detail = await item.health()
+            result[name] = {"ready": ready, "detail": detail, "models": await item.models() if ready else []}
+        return result
 
     @app.post("/api/v1/projects", status_code=201)
     async def add_project(payload: ProjectInput):
@@ -141,21 +155,24 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 raise ValueError("Only read-only or workspace-write access is available")
             if payload.approval_policy != "auto":
                 raise ValueError("Only autonomous approval is available in this UI")
-            models = await backend.models()
+            backend_for_agent = backends.get(payload.agent)
+            if backend_for_agent is None:
+                raise ValueError("Selected agent is not available")
+            models = await backend_for_agent.models()
             selected = next((item for item in models if item["id"] == payload.model), None)
             if payload.model is not None and selected is None:
-                raise ValueError("Selected Codex model is not available")
+                raise ValueError("Selected model is not available for this agent")
             if payload.reasoning is not None and selected is not None:
                 if payload.reasoning not in selected["reasoning_efforts"]:
                     raise ValueError("Selected reasoning level is not supported by this model")
             project = await service.update_project_agent_settings(
-                project_id, payload.model, payload.reasoning, payload.sandbox, payload.approval_policy
+                project_id, payload.agent, payload.model, payload.reasoning, payload.sandbox, payload.approval_policy
             )
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
         except ValueError as exc:
             raise error("invalid_agent_settings", str(exc), 422) from exc
-        return {"id": project.id, "model": project.model, "reasoning": project.reasoning,
+        return {"id": project.id, "agent": project.agent, "model": project.model, "reasoning": project.reasoning,
                 "sandbox": project.sandbox, "approval_policy": project.approval_policy}
 
     @app.post("/api/v1/projects/{project_id}/sessions", status_code=201)
@@ -178,7 +195,8 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 select(AgentSession).where(AgentSession.project_id == project_id, AgentSession.archived.is_(False))
             )).all())
         return [{"id": row.id, "title": row.title, "native_thread_id": row.native_thread_id,
-                 "source": "cline" if row.native_thread_id.startswith("cline:") else "codex"} for row in rows]
+                 "source": "cline" if row.native_thread_id.startswith("cline:") else
+                 "opencode" if row.native_thread_id.startswith("opencode:") else "codex"} for row in rows]
 
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def session_messages(session_id: str):

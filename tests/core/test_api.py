@@ -34,6 +34,11 @@ class FakeCodex:
         return True
 
 
+class FakeOpenCode(FakeCodex):
+    async def start_thread(self, cwd: Path, *, model, sandbox, reasoning=None, approval_policy="auto"):
+        return "opencode:fixture-session"
+
+
 def test_project_session_and_turn_lifecycle(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
@@ -98,3 +103,21 @@ def test_imported_session_history_is_available(tmp_path: Path):
         session = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
         history = client.get(f"/api/v1/sessions/{session['id']}/messages")
     assert history.json()[-1]["content"] == "Earlier answer"
+
+
+def test_opencode_can_be_selected_per_project(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)),
+                     backend={"codex": FakeCodex(), "opencode": FakeOpenCode()})
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        saved = client.put(
+            f"/api/v1/projects/{project['id']}/agent-settings",
+            json={"agent": "opencode", "model": "test-model", "reasoning": None,
+                  "sandbox": "workspace_write", "approval_policy": "auto"},
+        )
+        session = client.post(f"/api/v1/projects/{project['id']}/sessions")
+    assert saved.json()["agent"] == "opencode"
+    assert session.json()["native_thread_id"].startswith("opencode:")
