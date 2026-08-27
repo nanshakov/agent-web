@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from agent_web.cline import ClineHistory
 from agent_web.codex.base import UnavailableCodexBackend
 from agent_web.codex.sdk_backend import SdkCodexBackend
 from agent_web.config import Settings
@@ -54,6 +55,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         async def import_existing_sessions() -> None:
             try:
                 await service.import_existing_codex_sessions()
+                await service.import_cline_sessions(ClineHistory())
             except Exception:
                 # Discovery is a convenience; diagnostics remain available if Codex is offline.
                 pass
@@ -175,7 +177,8 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             rows = list((await db.scalars(
                 select(AgentSession).where(AgentSession.project_id == project_id, AgentSession.archived.is_(False))
             )).all())
-        return [{"id": row.id, "title": row.title, "native_thread_id": row.native_thread_id} for row in rows]
+        return [{"id": row.id, "title": row.title, "native_thread_id": row.native_thread_id,
+                 "source": "cline" if row.native_thread_id.startswith("cline:") else "codex"} for row in rows]
 
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def session_messages(session_id: str):

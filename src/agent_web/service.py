@@ -6,6 +6,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from agent_web.cline import ClineHistory
 from agent_web.codex.base import CodexBackend
 from agent_web.db.models import AgentSession, AuditEvent, Project, Turn
 
@@ -92,6 +93,31 @@ class AgentService:
                 await db.commit()
         return imported
 
+    async def import_cline_sessions(self, cline: ClineHistory) -> int:
+        """Import Cline tasks as read-only sessions when their Git project is allowed."""
+        imported = 0
+        async with self.session_factory() as db:
+            for task in cline.tasks():
+                path = Path(task["cwd"]).expanduser().resolve()
+                if not path.is_dir() or not (path / ".git").exists():
+                    continue
+                if not any(path.is_relative_to(root) for root in self.roots):
+                    continue
+                project = await db.scalar(select(Project).where(Project.path == str(path)))
+                if project is None:
+                    project = Project(name=path.name, path=str(path))
+                    db.add(project)
+                    await db.flush()
+                native_id = f"cline:{task['id']}"
+                existing = await db.scalar(select(AgentSession).where(AgentSession.native_thread_id == native_id))
+                if existing is None:
+                    db.add(AgentSession(project_id=project.id, native_thread_id=native_id, title=task["title"]))
+                    imported += 1
+            if imported:
+                db.add(AuditEvent(kind="cline.sessions_imported", detail=str(imported)))
+                await db.commit()
+        return imported
+
     async def create_session(self, project_id: str) -> AgentSession:
         async with self.session_factory() as db:
             project = await db.get(Project, project_id)
@@ -114,6 +140,8 @@ class AgentService:
             if session is None:
                 raise LookupError("Session not found")
             native_thread_id = session.native_thread_id
+        if native_thread_id.startswith("cline:"):
+            return ClineHistory().messages(native_thread_id.removeprefix("cline:"))
         return await self.backend.thread_history(native_thread_id)
 
     async def create_turn(self, session_id: str, prompt: str, request_id: str) -> Turn:
