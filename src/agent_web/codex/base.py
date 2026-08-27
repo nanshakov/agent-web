@@ -22,8 +22,11 @@ class CodexBackend(Protocol):
     async def models(self) -> list[dict[str, object]]: ...
 
     async def start_thread(
-        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None
+        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None,
+        approval_policy: str = "auto",
     ) -> str: ...
+
+    async def thread_history(self, native_thread_id: str) -> list[dict[str, str]]: ...
 
     async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]: ...
 
@@ -48,8 +51,12 @@ class UnavailableCodexBackend:
         return []
 
     async def start_thread(
-        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None
+        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None,
+        approval_policy: str = "auto",
     ) -> str:
+        raise RuntimeError(self.reason)
+
+    async def thread_history(self, native_thread_id: str) -> list[dict[str, str]]:
         raise RuntimeError(self.reason)
 
     async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]:

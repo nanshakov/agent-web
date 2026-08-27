@@ -31,6 +31,8 @@ class TurnInput(BaseModel):
 class ProjectAgentSettingsInput(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     reasoning: str | None = Field(default=None, max_length=80)
+    sandbox: str = "workspace_write"
+    approval_policy: str = "auto"
 
 
 def error(code: str, message: str, status: int) -> HTTPException:
@@ -133,6 +135,10 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     @app.put("/api/v1/projects/{project_id}/agent-settings")
     async def update_project_agent_settings(project_id: str, payload: ProjectAgentSettingsInput):
         try:
+            if payload.sandbox not in {"read_only", "workspace_write"}:
+                raise ValueError("Only read-only or workspace-write access is available")
+            if payload.approval_policy != "auto":
+                raise ValueError("Only autonomous approval is available in this UI")
             models = await backend.models()
             selected = next((item for item in models if item["id"] == payload.model), None)
             if payload.model is not None and selected is None:
@@ -141,13 +147,14 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 if payload.reasoning not in selected["reasoning_efforts"]:
                     raise ValueError("Selected reasoning level is not supported by this model")
             project = await service.update_project_agent_settings(
-                project_id, payload.model, payload.reasoning
+                project_id, payload.model, payload.reasoning, payload.sandbox, payload.approval_policy
             )
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
         except ValueError as exc:
             raise error("invalid_agent_settings", str(exc), 422) from exc
-        return {"id": project.id, "model": project.model, "reasoning": project.reasoning}
+        return {"id": project.id, "model": project.model, "reasoning": project.reasoning,
+                "sandbox": project.sandbox, "approval_policy": project.approval_policy}
 
     @app.post("/api/v1/projects/{project_id}/sessions", status_code=201)
     async def add_session(project_id: str):
@@ -169,6 +176,15 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 select(AgentSession).where(AgentSession.project_id == project_id, AgentSession.archived.is_(False))
             )).all())
         return [{"id": row.id, "title": row.title, "native_thread_id": row.native_thread_id} for row in rows]
+
+    @app.get("/api/v1/sessions/{session_id}/messages")
+    async def session_messages(session_id: str):
+        try:
+            return await service.session_history(session_id)
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
+        except Exception as exc:
+            raise error("history_unavailable", str(exc), 502) from exc
 
     @app.post("/api/v1/sessions/{session_id}/turns")
     async def add_turn(session_id: str, payload: TurnInput):

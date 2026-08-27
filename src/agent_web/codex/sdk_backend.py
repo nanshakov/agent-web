@@ -52,12 +52,16 @@ class SdkCodexBackend:
         return catalog
 
     async def start_thread(
-        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None
+        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None,
+        approval_policy: str = "auto",
     ) -> str:
-        from openai_codex import Sandbox  # type: ignore[import-not-found]
+        from openai_codex import ApprovalMode, Sandbox  # type: ignore[import-not-found]
 
         codex = await self._client()
-        kwargs = {"cwd": str(cwd), "sandbox": getattr(Sandbox, sandbox)}
+        kwargs = {
+            "cwd": str(cwd), "sandbox": getattr(Sandbox, sandbox),
+            "approval_mode": ApprovalMode.auto_review,
+        }
         if model:
             kwargs["model"] = model
         if reasoning:
@@ -66,6 +70,26 @@ class SdkCodexBackend:
         native_id = str(thread.id)
         self._threads[native_id] = thread
         return native_id
+
+    async def thread_history(self, native_thread_id: str) -> list[dict[str, str]]:
+        codex = await self._client()
+        # Reading through the app-server client deliberately avoids resuming a
+        # thread: another Codex client can be actively writing to it.
+        response = await codex._client.thread_read(native_thread_id, include_turns=True)
+        messages: list[dict[str, str]] = []
+        for turn in response.thread.turns:
+            for item in turn.items:
+                message = item.root
+                if message.type == "agentMessage":
+                    messages.append({"role": "assistant", "content": message.text})
+                elif message.type == "userMessage":
+                    text = "\n".join(
+                        part.root.text for part in message.content
+                        if getattr(part.root, "type", None) == "text"
+                    )
+                    if text:
+                        messages.append({"role": "user", "content": text})
+        return messages
 
     async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]:
         codex = await self._client()

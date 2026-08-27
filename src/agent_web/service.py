@@ -40,7 +40,8 @@ class AgentService:
             return list((await db.scalars(select(Project).order_by(Project.name))).all())
 
     async def update_project_agent_settings(
-        self, project_id: str, model: str | None, reasoning: str | None
+        self, project_id: str, model: str | None, reasoning: str | None, sandbox: str,
+        approval_policy: str,
     ) -> Project:
         async with self.session_factory() as db:
             project = await db.get(Project, project_id)
@@ -48,6 +49,8 @@ class AgentService:
                 raise LookupError("Project not found")
             project.model = model
             project.reasoning = reasoning
+            project.sandbox = sandbox
+            project.approval_policy = approval_policy
             db.add(AuditEvent(kind="project.agent_settings_updated", subject_id=project.id))
             await db.commit()
             await db.refresh(project)
@@ -95,7 +98,8 @@ class AgentService:
             if project is None:
                 raise LookupError("Project not found")
             native_id = await self.backend.start_thread(
-                Path(project.path), model=project.model, sandbox=project.sandbox, reasoning=project.reasoning
+                Path(project.path), model=project.model, sandbox=project.sandbox,
+                reasoning=project.reasoning, approval_policy=project.approval_policy,
             )
             session = AgentSession(project_id=project.id, native_thread_id=native_id)
             db.add(session)
@@ -103,6 +107,14 @@ class AgentService:
             await db.commit()
             await db.refresh(session)
             return session
+
+    async def session_history(self, session_id: str) -> list[dict[str, str]]:
+        async with self.session_factory() as db:
+            session = await db.get(AgentSession, session_id)
+            if session is None:
+                raise LookupError("Session not found")
+            native_thread_id = session.native_thread_id
+        return await self.backend.thread_history(native_thread_id)
 
     async def create_turn(self, session_id: str, prompt: str, request_id: str) -> Turn:
         async with self.session_factory() as db:
