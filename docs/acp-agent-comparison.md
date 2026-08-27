@@ -1,56 +1,55 @@
-# ACP agents for Agent Web
+# Cline, OpenCode и Goose как ACP-бэкенды
 
-## What Agent Web needs
+Проверено по первоисточникам 27 августа 2026 года. Здесь ACP означает, что
+Agent Web запускает агент как дочерний процесс по `stdio`, а не разбирает его
+консольный JSON.
 
-The integration needs an ACP subprocess with session create/load/resume, prompt
-updates, cancellation, permission requests, project-scoped filesystem access,
-and a selectable local OpenAI-compatible provider.
+## Итог для Agent Web
 
-## Cline
+У Cline нет важной для нашего Web UI ACP-возможности, которой не было бы у
+OpenCode. Напротив, OpenCode публикует более полный жизненный цикл сессий.
+Для локальной Qwen в LM Studio первым кандидатом стоит сделать **OpenCode**.
+Goose тоже подходит, но его ACP-интеграция пока помечена upstream как
+experimental.
 
-Cline adds a product layer beyond the common ACP boundary: explicit Plan/Act
-modes, checkpoints and diff review, browser tooling, project rules/skills,
-teams, scheduling, and channel integrations. Its README also explicitly lists
-LM Studio and any OpenAI-compatible API as providers.
+| Возможность | Cline | OpenCode | Goose |
+|---|---|---|---|
+| Запуск ACP | `cline --acp` | `opencode acp` | `goose acp` |
+| Потоковые события и отмена prompt | Да | Да | Да |
+| Запросы разрешений | План/Act, по файлам и командам; auto-approve | Система permissions агента | Allow/reject once или always |
+| Модель и режим во время сессии | Provider/model, Plan/Act | model/mode/set-config | model/mode |
+| Сессии для UI | Заявлен resume; исходный ACP capability включает `loadSession` | new, list, load, resume, close, fork | persisted history, list (пагинация), fork; доступ истории зависит от ACP-клиента |
+| Local OpenAI-compatible / LM Studio | Да, но текущий ACP блокирует `newSession` без Cline auth/API key | Да: `@ai-sdk/openai-compatible` + `baseURL` | Да: нативный OpenAI-compatible provider, `/models`, streaming |
 
-Source: <https://github.com/cline/cline>
+## Что у Cline действительно своё
 
-Current drawback: the Cline CLI ACP server has an account gate even when a
-local OpenAI-compatible provider is configured. See
-[#11662](https://github.com/cline/cline/issues/11662) and
-[#12120](https://github.com/cline/cline/issues/12120).
+Cline лучше всего оформляет именно UX IDE: понятный Plan/Act, детальные
+подтверждения для команд и файлов, выбор provider/model, изображения и
+переключение организаций. Это удобно, но для нашего mobile-first Agent Web не
+является недостающей ACP-функцией: OpenCode сохраняет инструменты, MCP,
+`AGENTS.md`, formatter/linter и permissions, а Goose покрывает core-агентский
+сценарий.
 
-## OpenCode
+Критичное ограничение именно для нас: обычный Cline может использовать LM
+Studio, но в текущем ACP-пути `newSession` проверяет Cline authentication или
+`CLINE_API_KEY`. Поэтому это не корректный локальный backend без отдельного
+входа, хотя сама модель остаётся локальной.
 
-OpenCode documents `opencode acp` as an ACP stdio subprocess. Its ACP page
-states that the same terminal features are supported through ACP: built-in
-file and terminal tools, custom tools and commands, MCP, `AGENTS.md`, custom
-formatters/linters, agents, and the permissions system. It notes only that
-`/undo` and `/redo` are not currently available via ACP.
+## Рекомендация
 
-Source: <https://opencode.ai/docs/acp>
+1. Сохраняем уже работающий Codex backend.
+2. Следующим ACP-бэкендом пробуем OpenCode + LM Studio/Qwen: он не требует
+   Cline account и лучше покрывает список/продолжение/ветвление чатов.
+3. Goose рассматриваем вторым: особенно если понадобятся его расширения и
+   более общий workflow-agent, но учитываем experimental-статус ACP.
+4. Cline оставляем опциональным, пока upstream не уберёт ACP auth-gate для
+   локального provider.
 
-This covers the critical Agent Web requirements without Cline's ACP account
-gate. Cline-specific Plan/Act and checkpoint UX are not protocol requirements;
-Agent Web can expose its own project access and approval controls.
+## Источники
 
-## Goose
-
-Goose is an Apache-2.0 open-source Rust agent with a CLI, desktop application,
-and embedding API. Its public source contains ACP handlers for new/load/list
-and fork sessions, prompts, provider selection, tool calls, permissions, and
-local inference. That makes it a credible ACP backend, though it needs a real
-Windows + LM Studio compatibility spike before selection.
-
-Sources:
-
-- <https://github.com/aaif-goose/goose>
-- <https://github.com/aaif-goose/goose/tree/main/crates/goose/src/acp/server>
-
-## Recommendation
-
-For a no-account local-LM MVP, test OpenCode first. Its documented ACP support
-matches the required transport features and has no known equivalent account
-gate. Keep Cline as a selectable backend once its ACP account gate is fixed or
-if a Cline account is acceptable. Evaluate Goose next if a more general
-workflow agent is desired.
+- [Cline ACP](https://github.com/cline/cline/blob/main/docs/usage/acp.mdx) и [реализация ACP](https://github.com/cline/cline/blob/main/apps/cli/src/acp/acpAgent.ts)
+- [Cline: OpenAI-compatible и LM Studio](https://github.com/cline/cline/blob/main/docs/provider-config/openai-compatible.mdx)
+- [OpenCode ACP](https://github.com/anomalyco/opencode/blob/dev/packages/web/src/content/docs/acp.mdx) и [реализация ACP](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/acp/agent.ts)
+- [OpenCode: custom OpenAI-compatible provider](https://github.com/anomalyco/opencode/blob/dev/packages/web/src/content/docs/providers.mdx)
+- [Goose ACP clients](https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/acp-clients.md), [list sessions](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/acp/server/list_sessions.rs), [fork session](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/acp/server/fork_session.rs)
+- [Goose OpenAI-compatible provider](https://github.com/aaif-goose/goose/blob/main/crates/goose-providers/src/openai_compatible.rs)
