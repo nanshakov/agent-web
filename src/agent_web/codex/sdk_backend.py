@@ -36,13 +36,32 @@ class SdkCodexBackend:
             return False, str(error)
         return True, "ready"
 
-    async def start_thread(self, cwd: Path, *, model: str | None, sandbox: str) -> str:
+    async def models(self) -> list[dict[str, object]]:
+        """Return only model metadata safe to expose on the local UI."""
+        response = await (await self._client()).models()
+        catalog = []
+        for item in response.data:
+            efforts = [str(option.reasoning_effort.value) for option in item.supported_reasoning_efforts]
+            catalog.append({
+                "id": str(item.model),
+                "name": str(item.display_name),
+                "default": bool(item.is_default),
+                "reasoning_efforts": efforts,
+                "default_reasoning": str(item.default_reasoning_effort.value),
+            })
+        return catalog
+
+    async def start_thread(
+        self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None
+    ) -> str:
         from openai_codex import Sandbox  # type: ignore[import-not-found]
 
         codex = await self._client()
         kwargs = {"cwd": str(cwd), "sandbox": getattr(Sandbox, sandbox)}
         if model:
             kwargs["model"] = model
+        if reasoning:
+            kwargs["config"] = {"model_reasoning_effort": reasoning}
         thread = await codex.thread_start(**kwargs)
         native_id = str(thread.id)
         self._threads[native_id] = thread

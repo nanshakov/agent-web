@@ -28,6 +28,11 @@ class TurnInput(BaseModel):
     client_request_id: str = Field(min_length=8, max_length=100)
 
 
+class ProjectAgentSettingsInput(BaseModel):
+    model: str | None = Field(default=None, max_length=120)
+    reasoning: str | None = Field(default=None, max_length=80)
+
+
 def error(code: str, message: str, status: int) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
@@ -93,6 +98,20 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def capabilities():
         return backend.capabilities.__dict__
 
+    @app.get("/api/v1/codex/status")
+    async def codex_status():
+        try:
+            models = await backend.models()
+        except Exception:
+            models = []
+        return {
+            "models": models,
+            "usage": {
+                "available": False,
+                "message": "Remaining limits are not available through the local Codex SDK.",
+            },
+        }
+
     @app.get("/api/v1/update")
     async def update_status():
         return app.state.update_status
@@ -101,7 +120,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def projects():
         rows = await service.list_projects()
         return [{"id": p.id, "name": p.name, "path": p.path, "sandbox": p.sandbox,
-                 "approval_policy": p.approval_policy} for p in rows]
+                 "approval_policy": p.approval_policy, "model": p.model, "reasoning": p.reasoning} for p in rows]
 
     @app.post("/api/v1/projects", status_code=201)
     async def add_project(payload: ProjectInput):
@@ -110,6 +129,25 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         except ValueError as exc:
             raise error("invalid_project", str(exc), 422) from exc
         return {"id": project.id, "name": project.name, "path": project.path}
+
+    @app.put("/api/v1/projects/{project_id}/agent-settings")
+    async def update_project_agent_settings(project_id: str, payload: ProjectAgentSettingsInput):
+        try:
+            models = await backend.models()
+            selected = next((item for item in models if item["id"] == payload.model), None)
+            if payload.model is not None and selected is None:
+                raise ValueError("Selected Codex model is not available")
+            if payload.reasoning is not None and selected is not None:
+                if payload.reasoning not in selected["reasoning_efforts"]:
+                    raise ValueError("Selected reasoning level is not supported by this model")
+            project = await service.update_project_agent_settings(
+                project_id, payload.model, payload.reasoning
+            )
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
+        except ValueError as exc:
+            raise error("invalid_agent_settings", str(exc), 422) from exc
+        return {"id": project.id, "model": project.model, "reasoning": project.reasoning}
 
     @app.post("/api/v1/projects/{project_id}/sessions", status_code=201)
     async def add_session(project_id: str):

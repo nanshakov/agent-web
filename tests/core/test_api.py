@@ -13,7 +13,11 @@ class FakeCodex:
     async def health(self):
         return True, "ready"
 
-    async def start_thread(self, cwd: Path, *, model, sandbox):
+    async def models(self):
+        return [{"id": "test-model", "name": "Test model", "default": True,
+                 "reasoning_efforts": ["low", "high"], "default_reasoning": "low"}]
+
+    async def start_thread(self, cwd: Path, *, model, sandbox, reasoning=None):
         return "fixture-thread"
 
     async def list_threads(self, limit=100):
@@ -59,3 +63,20 @@ def test_update_endpoint_reports_not_configured(tmp_path: Path):
     with TestClient(app) as client:
         response = client.get("/api/v1/update")
     assert response.json() == {"state": "not_configured"}
+
+
+def test_project_agent_settings_and_codex_status(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        saved = client.put(
+            f"/api/v1/projects/{project['id']}/agent-settings",
+            json={"model": "test-model", "reasoning": "high"},
+        )
+        status = client.get("/api/v1/codex/status")
+    assert saved.json()["reasoning"] == "high"
+    assert status.json()["models"][0]["id"] == "test-model"
+    assert status.json()["usage"]["available"] is False

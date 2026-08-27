@@ -39,6 +39,20 @@ class AgentService:
         async with self.session_factory() as db:
             return list((await db.scalars(select(Project).order_by(Project.name))).all())
 
+    async def update_project_agent_settings(
+        self, project_id: str, model: str | None, reasoning: str | None
+    ) -> Project:
+        async with self.session_factory() as db:
+            project = await db.get(Project, project_id)
+            if project is None:
+                raise LookupError("Project not found")
+            project.model = model
+            project.reasoning = reasoning
+            db.add(AuditEvent(kind="project.agent_settings_updated", subject_id=project.id))
+            await db.commit()
+            await db.refresh(project)
+            return project
+
     async def import_existing_codex_sessions(self) -> int:
         """Import only threads whose Git cwd is already inside an allowed root."""
         threads = await self.backend.list_threads()
@@ -81,7 +95,7 @@ class AgentService:
             if project is None:
                 raise LookupError("Project not found")
             native_id = await self.backend.start_thread(
-                Path(project.path), model=project.model, sandbox=project.sandbox
+                Path(project.path), model=project.model, sandbox=project.sandbox, reasoning=project.reasoning
             )
             session = AgentSession(project_id=project.id, native_thread_id=native_id)
             db.add(session)
