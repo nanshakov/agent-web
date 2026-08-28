@@ -230,8 +230,10 @@ class AgentService:
     def _transcript(messages: list[dict[str, str]]) -> str:
         return "\n\n".join(f"{item['role'].upper()}: {item['content']}" for item in messages)
 
-    async def sync_external_history(self, session_id: str) -> int:
-        """Append messages written outside Agent Web by the active native agent."""
+    async def _sync_external_history(
+        self, session_id: str,
+    ) -> tuple[int, list[dict[str, str]]]:
+        """Persist external messages and retain the native ordering for this request."""
         async with self.session_factory() as db:
             session = await db.get(AgentSession, session_id)
             if session is None:
@@ -243,7 +245,7 @@ class AgentService:
         else:
             backend = self.backends.get(segment.agent)
             if backend is None:
-                return 0
+                return 0, []
             register = getattr(backend, "register_thread", None)
             if register is not None:
                 register(segment.native_thread_id, Path(project.path))
@@ -271,11 +273,16 @@ class AgentService:
                 db.add(AuditEvent(kind="chat.external_messages_synced", subject_id=session_id,
                                   detail=str(imported)))
                 await db.commit()
-            return imported
+            return imported, incoming
+
+    async def sync_external_history(self, session_id: str) -> int:
+        imported, _ = await self._sync_external_history(session_id)
+        return imported
 
     async def session_history(self, session_id: str) -> list[dict[str, str]]:
+        live_history = None
         try:
-            await self.sync_external_history(session_id)
+            _, live_history = await self._sync_external_history(session_id)
         except Exception:
             # Saved turns still give the user a useful local history when a
             # native app is offline or removed.
@@ -294,9 +301,20 @@ class AgentService:
         messages = []
         for segment in segments:
             metadata = {"agent": segment.agent, "model": segment.model or "", "reasoning": segment.reasoning or ""}
+            segment_turns = [item for item in stored_turns if item.segment_id == segment.id]
+            if segment.status == "active" and live_history is not None:
+                unmatched = self._turn_messages(segment_turns)
+                for item in live_history:
+                    messages.append({"role": item["role"], "content": item["content"], **metadata})
+                    try:
+                        unmatched.remove({"role": item["role"], "content": item["content"]})
+                    except ValueError:
+                        pass
+                messages.extend({**item, **metadata} for item in unmatched)
+                continue
             for item in (message for message in external if message.segment_id == segment.id):
                 messages.append({"role": item.role, "content": item.content, **metadata})
-            for turn in (item for item in stored_turns if item.segment_id == segment.id):
+            for turn in segment_turns:
                 messages.extend((
                     {"role": "user", "content": turn.prompt, **metadata},
                     {"role": "assistant", "content": turn.response or "", **metadata},

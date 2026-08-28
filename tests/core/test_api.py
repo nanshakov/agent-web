@@ -200,6 +200,29 @@ def test_opening_chat_syncs_new_native_messages(tmp_path: Path):
     assert history[-1]["content"] == "written outside Agent Web"
 
 
+def test_opening_chat_places_new_native_messages_after_saved_turns(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    backend = SyncingCodex()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=backend)
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+            "prompt": "saved locally", "client_request_id": "request-history-order",
+        })
+        backend.history = [
+            {"role": "user", "content": "saved locally"},
+            {"role": "assistant", "content": "answered: saved locally"},
+            {"role": "user", "content": "written outside Agent Web"},
+        ]
+        history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+    assert [message["content"] for message in history] == [
+        "saved locally", "answered: saved locally", "written outside Agent Web",
+    ]
+
+
 def test_long_history_uses_source_agent_summary_for_handoff(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
