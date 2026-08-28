@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -36,6 +36,10 @@ class ProjectAgentSettingsInput(BaseModel):
     reasoning: str | None = Field(default=None, max_length=80)
     sandbox: str = "workspace_write"
     approval_policy: str = "auto"
+
+
+class SessionSwitchInput(ProjectAgentSettingsInput):
+    pass
 
 
 def error(code: str, message: str, status: int) -> HTTPException:
@@ -185,18 +189,50 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             raise error("codex_unavailable", str(exc), 503) from exc
         return {"id": session.id, "native_thread_id": session.native_thread_id}
 
+    @app.post("/api/v1/sessions/{session_id}/switch", status_code=201)
+    async def switch_session(session_id: str, payload: SessionSwitchInput):
+        try:
+            if payload.sandbox not in {"read_only", "workspace_write"}:
+                raise ValueError("Only read-only or workspace-write access is available")
+            backend_for_agent = backends.get(payload.agent)
+            if backend_for_agent is None:
+                raise ValueError("Selected agent is not available")
+            models = await backend_for_agent.models()
+            selected = next((item for item in models if item["id"] == payload.model), None)
+            if payload.model is not None and selected is None:
+                raise ValueError("Selected model is not available for this agent")
+            if payload.reasoning is not None and selected is not None and \
+                    payload.reasoning not in selected["reasoning_efforts"]:
+                raise ValueError("Selected reasoning level is not supported by this model")
+            segment = await service.switch_session(
+                session_id, agent=payload.agent, model=payload.model, reasoning=payload.reasoning,
+                sandbox=payload.sandbox,
+            )
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
+        except RuntimeError as exc:
+            raise error("chat_busy", str(exc), 409) from exc
+        except ValueError as exc:
+            raise error("invalid_agent_settings", str(exc), 422) from exc
+        except Exception as exc:
+            raise error("agent_unavailable", str(exc), 503) from exc
+        return {"id": segment.id, "agent": segment.agent, "model": segment.model,
+                "reasoning": segment.reasoning, "status": segment.status}
+
     @app.get("/api/v1/projects/{project_id}/sessions")
     async def sessions(project_id: str):
         from sqlalchemy import select
-        from agent_web.db.models import AgentSession
+        from agent_web.db.models import AgentSegment, AgentSession
 
         async with session_factory() as db:
             rows = list((await db.scalars(
                 select(AgentSession).where(AgentSession.project_id == project_id, AgentSession.archived.is_(False))
             )).all())
-        return [{"id": row.id, "title": row.title, "native_thread_id": row.native_thread_id,
-                 "source": "cline" if row.native_thread_id.startswith("cline:") else
-                 "opencode" if row.native_thread_id.startswith("opencode:") else "codex"} for row in rows]
+            active = {item.session_id: item for item in (await db.scalars(select(AgentSegment).where(
+                AgentSegment.status == "active"))).all()}
+        return [{"id": row.id, "title": row.title,
+                 "native_thread_id": active.get(row.id).native_thread_id if row.id in active else row.native_thread_id,
+                 "source": active.get(row.id).agent if row.id in active else "codex"} for row in rows]
 
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def session_messages(session_id: str):
@@ -206,6 +242,20 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             raise error("not_found", str(exc), 404) from exc
         except Exception as exc:
             raise error("history_unavailable", str(exc), 502) from exc
+
+    @app.get("/api/v1/sessions/{session_id}/context")
+    async def session_context(session_id: str):
+        try:
+            return await service.export_context(session_id)
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
+
+    @app.get("/api/v1/sessions/{session_id}/context.md", response_class=PlainTextResponse)
+    async def session_context_markdown(session_id: str):
+        try:
+            return await service.export_context_markdown(session_id)
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
 
     @app.post("/api/v1/sessions/{session_id}/turns")
     async def add_turn(session_id: str, payload: TurnInput):

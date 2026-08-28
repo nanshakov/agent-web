@@ -25,6 +25,14 @@ Read-only chats deny edits, shell commands, and subagents. Workspace-write
 chats deny paths outside the project's working directory while allowing
 autonomous work inside it.
 
+## Continuing with another agent
+
+A visible chat can contain several internal agent segments. In an open chat,
+choose an agent, model, reasoning level, and access mode, then use **Switch for
+next message**. The next message carries the previous Agent Web history to the
+new agent while the old segment remains visible. The chat panel can export the
+portable history as `context.json` or `context.md`.
+
 The server binds to `127.0.0.1` by default. `--allow-lan` binds it to `0.0.0.0`.
 Without application authentication, never expose it outside a trusted LAN.
 

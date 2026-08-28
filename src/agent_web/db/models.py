@@ -29,6 +29,7 @@ class Project(Base):
 
 
 class AgentSession(Base):
+    """A user-visible logical chat, potentially spanning several agents."""
     __tablename__ = "agent_sessions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
@@ -38,10 +39,27 @@ class AgentSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentSegment(Base):
+    """One native Codex/OpenCode session within a logical chat."""
+    __tablename__ = "agent_segments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
+    native_thread_id: Mapped[str] = mapped_column(String(255), unique=True)
+    agent: Mapped[str] = mapped_column(String(40))
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sandbox: Mapped[str] = mapped_column(String(40), default="workspace_write")
+    status: Mapped[str] = mapped_column(String(40), default="active")
+    handoff_pending: Mapped[bool] = mapped_column(default=False)
+    handoff_context: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Turn(Base):
     __tablename__ = "turns"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     session_id: Mapped[str] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
+    segment_id: Mapped[str | None] = mapped_column(ForeignKey("agent_segments.id"), nullable=True, index=True)
     client_request_id: Mapped[str] = mapped_column(String(100), unique=True)
     prompt: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(String(40), default="queued")
