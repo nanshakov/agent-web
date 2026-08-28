@@ -17,7 +17,7 @@ from agent_web.opencode_acp import OpenCodeAcpBackend
 from agent_web.config import Settings
 from agent_web.db.database import create_database, migrate_database
 from agent_web.markdown import render_markdown
-from agent_web.service import AgentService
+from agent_web.service import AgentService, chat_title
 from agent_web.updater import UpdateError, Updater
 
 
@@ -224,7 +224,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     @app.get("/api/v1/projects/{project_id}/sessions")
     async def sessions(project_id: str):
         from sqlalchemy import select
-        from agent_web.db.models import AgentSegment, AgentSession
+        from agent_web.db.models import AgentSegment, AgentSession, Turn
 
         async with session_factory() as db:
             rows = list((await db.scalars(
@@ -232,7 +232,15 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             )).all())
             active = {item.session_id: item for item in (await db.scalars(select(AgentSegment).where(
                 AgentSegment.status == "active"))).all()}
-        return [{"id": row.id, "title": row.title,
+            missing_titles = {row.id for row in rows if row.title is None}
+            fallback_titles = {}
+            if missing_titles:
+                turns = (await db.scalars(select(Turn).where(
+                    Turn.session_id.in_(missing_titles)).order_by(Turn.created_at)
+                )).all()
+                for turn in turns:
+                    fallback_titles.setdefault(turn.session_id, chat_title(turn.prompt))
+        return [{"id": row.id, "title": row.title or fallback_titles.get(row.id),
                  "native_thread_id": active.get(row.id).native_thread_id if row.id in active else row.native_thread_id,
                  "source": active.get(row.id).agent if row.id in active else "codex"} for row in rows]
 

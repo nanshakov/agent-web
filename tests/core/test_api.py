@@ -1,3 +1,4 @@
+import sqlite3
 import time
 from pathlib import Path
 
@@ -93,6 +94,12 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
         ))
         assert turn["response"] == "answered: hello"
         assert turn["rendered_response"] == "<p>answered: hello</p>\n"
+        sessions = client.get(f"/api/v1/projects/{project_id}/sessions").json()
+        assert sessions[0]["title"] == "hello"
+        with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
+            database.execute("UPDATE agent_sessions SET title = NULL")
+        legacy_sessions = client.get(f"/api/v1/projects/{project_id}/sessions").json()
+        assert legacy_sessions[0]["title"] == "hello"
 
 
 def test_project_outside_allowed_root_is_rejected(tmp_path: Path):

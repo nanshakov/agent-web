@@ -15,6 +15,11 @@ from agent_web.db.models import AgentSegment, AgentSession, AuditEvent, External
 logger = logging.getLogger(__name__)
 
 
+def chat_title(prompt: str) -> str:
+    compact_prompt = " ".join(prompt.split()) or "Untitled chat"
+    return compact_prompt[:297] + "..." if len(compact_prompt) > 300 else compact_prompt
+
+
 class AgentService:
     MAX_HANDOFF_CHARS = 120_000
     def __init__(self, session_factory: async_sessionmaker, backends: dict[str, CodexBackend] | CodexBackend,
@@ -378,6 +383,8 @@ class AgentService:
             if project.id in self._active_projects:
                 raise RuntimeError("Project already has an active turn")
             segment = await self._active_segment(db, session.id)
+            if session.title is None:
+                session.title = chat_title(prompt)
             turn = Turn(session_id=session.id, segment_id=segment.id, client_request_id=request_id,
                         prompt=prompt, status="running")
             db.add(turn)
