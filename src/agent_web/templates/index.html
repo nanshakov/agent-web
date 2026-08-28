@@ -4,16 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Agent Web</title>
-    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/app.css?v=console-redesign">
   </head>
   <body>
-    <main>
-      <header><span class="eyebrow">LOCAL AGENTS</span><h1>Agent Web</h1><p id="health">Checking agents…</p><p id="limits"></p><p id="update"></p></header>
-      {% if lan_mode %}<aside>LAN prototype: anyone on this network can control configured projects.</aside>{% endif %}
-      <section><h2>Projects</h2><div id="projects"></div></section>
-      <section><h2>Add project</h2><form id="project-form"><input name="name" placeholder="Name" required><input name="path" placeholder="Project folder path" required><button>Add</button></form></section>
-      <section id="chat" hidden><h2 id="session-title">New session</h2><div id="chat-settings"></div><div id="messages"></div><form id="turn-form"><textarea name="prompt" placeholder="Ask your agent…" required></textarea><button>Send</button></form></section>
+    <main class="console-shell">
+      <header class="topbar">
+        <div class="brand-lockup"><span class="brand-mark">AW</span><div><span class="eyebrow">AGENT WEB / LOCAL CONTROL PLANE</span><h1>Agent Console</h1></div></div>
+        <div class="runtime-readout"><span class="signal" aria-hidden="true"></span><span id="health">Checking agents…</span><span id="limits"></span><span id="update"></span></div>
+      </header>
+      {% if lan_mode %}<aside class="lan-alert"><strong>LAN mode</strong><span>Anyone on this network can control configured projects.</span></aside>{% endif %}
+      <section class="project-index"><div class="section-heading"><span class="section-kicker">01 / WORKSPACES</span><h2>Projects</h2></div><div id="projects" aria-live="polite"></div></section>
+      <section class="project-create"><div class="section-heading"><span class="section-kicker">02 / REGISTER</span><h2>Add a project folder</h2></div><form id="project-form"><label>Name<input name="name" placeholder="e.g. API migration" required></label><label>Folder path<input name="path" placeholder="C:\dev\project" required></label><button>Add project</button></form></section>
+      <section id="chat" class="chat-workspace" hidden><div class="chat-heading"><div><span class="section-kicker">03 / ACTIVE THREAD</span><h2 id="session-title">New session</h2></div><span class="thread-state">LIVE</span></div><div id="chat-settings"></div><div id="messages" aria-live="polite"></div><form id="turn-form" class="composer"><label>Instruction<textarea name="prompt" placeholder="Describe the next task for your agent…" required></textarea></label><button>Run turn</button></form></section>
     </main>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=console-redesign"></script>
   </body>
 </html>
