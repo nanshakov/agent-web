@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -63,6 +64,18 @@ class LongHistoryCodex(FakeCodex):
         return f"answered: {prompt}"
 
 
+def completed_turn(client: TestClient, response):
+    assert response.status_code == 200
+    turn_id = response.json()["id"]
+    for _ in range(50):
+        turn = client.get(f"/api/v1/turns/{turn_id}")
+        assert turn.status_code == 200
+        if turn.json()["status"] != "running":
+            return turn.json()
+        time.sleep(0.01)
+    raise AssertionError("turn did not complete")
+
+
 def test_project_session_and_turn_lifecycle(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
@@ -74,11 +87,11 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
         project_id = created.json()["id"]
         session = client.post(f"/api/v1/projects/{project_id}/sessions")
         assert session.status_code == 201
-        turn = client.post(
+        turn = completed_turn(client, client.post(
             f"/api/v1/sessions/{session.json()['id']}/turns",
             json={"prompt": "hello", "client_request_id": "request-0001"},
-        )
-        assert turn.json()["response"] == "answered: hello"
+        ))
+        assert turn["response"] == "answered: hello"
 
 
 def test_project_outside_allowed_root_is_rejected(tmp_path: Path):
@@ -167,21 +180,21 @@ def test_switching_agent_keeps_one_chat_and_hands_off_history(tmp_path: Path):
     with TestClient(app) as client:
         project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
         chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
-        client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+        completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
             "prompt": "remember this", "client_request_id": "request-0002"
-        })
+        }))
         switched = client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
             "agent": "opencode", "model": "test-model", "reasoning": "high",
             "sandbox": "workspace_write", "approval_policy": "auto",
         })
-        turn = client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+        turn = completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
             "prompt": "continue", "client_request_id": "request-0003"
-        })
+        }))
         context = client.get(f"/api/v1/sessions/{chat['id']}/context")
     assert switched.status_code == 201
     assert "Previous chat" in opencode.prompts[-1]
     assert "remember this" in opencode.prompts[-1]
-    assert turn.status_code == 200
+    assert turn["status"] == "completed"
     assert len(context.json()["segments"]) == 2
 
 
@@ -209,9 +222,9 @@ def test_opening_chat_places_new_native_messages_after_saved_turns(tmp_path: Pat
     with TestClient(app) as client:
         project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
         chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
-        client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+        completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
             "prompt": "saved locally", "client_request_id": "request-history-order",
-        })
+        }))
         backend.history = [
             {"role": "user", "content": "saved locally"},
             {"role": "assistant", "content": "answered: saved locally"},
@@ -237,8 +250,8 @@ def test_long_history_uses_source_agent_summary_for_handoff(tmp_path: Path):
             "agent": "opencode", "model": "test-model", "reasoning": "high",
             "sandbox": "workspace_write", "approval_policy": "auto",
         })
-        client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+        completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
             "prompt": "continue", "client_request_id": "request-0004"
-        })
+        }))
     assert any(prompt.startswith("Summarize the work") for prompt in source.prompts)
     assert "compact handoff summary" in target.prompts[-1]

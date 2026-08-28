@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from sqlalchemy import select
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from agent_web.cline import ClineHistory
 from agent_web.codex.base import CodexBackend
 from agent_web.db.models import AgentSegment, AgentSession, AuditEvent, ExternalMessage, Project, Turn
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -283,7 +286,7 @@ class AgentService:
         live_history = None
         try:
             _, live_history = await self._sync_external_history(session_id)
-        except Exception:
+        except Exception as exc:
             # Saved turns still give the user a useful local history when a
             # native app is offline or removed.
             pass
@@ -361,11 +364,11 @@ class AgentService:
             f"--- Previous chat ---\n{transcript}\n--- End previous chat ---\n\nCurrent user request:\n{prompt}"
         )
 
-    async def create_turn(self, session_id: str, prompt: str, request_id: str) -> Turn:
+    async def enqueue_turn(self, session_id: str, prompt: str, request_id: str) -> tuple[Turn, bool]:
         async with self.session_factory() as db:
             existing = await db.scalar(select(Turn).where(Turn.client_request_id == request_id))
             if existing:
-                return existing
+                return existing, False
             session = await db.get(AgentSession, session_id)
             if session is None:
                 raise LookupError("Session not found")
@@ -382,6 +385,22 @@ class AgentService:
             await db.commit()
             await db.refresh(turn)
         self._active_projects.add(project.id)
+        return turn, True
+
+    async def execute_turn(self, turn_id: str) -> Turn:
+        async with self.session_factory() as db:
+            turn = await db.get(Turn, turn_id)
+            if turn is None:
+                raise LookupError("Turn not found")
+            session = await db.get(AgentSession, turn.session_id)
+            if session is None:
+                raise LookupError("Session not found")
+            project = await db.get(Project, session.project_id)
+            if project is None:
+                raise LookupError("Project not found")
+            segment = await db.get(AgentSegment, turn.segment_id)
+            if segment is None:
+                raise RuntimeError("This chat has no active agent segment")
         try:
             backend = self.backends.get(segment.agent)
             if backend is None:
@@ -389,10 +408,10 @@ class AgentService:
             register = getattr(backend, "register_thread", None)
             if register is not None:
                 register(segment.native_thread_id, Path(project.path))
-            submitted_prompt = prompt
+            submitted_prompt = turn.prompt
             if segment.handoff_pending:
                 earlier = json.loads(segment.handoff_context or "[]")
-                submitted_prompt = self._handoff_prompt(earlier, prompt)
+                submitted_prompt = self._handoff_prompt(earlier, turn.prompt)
             response = await backend.run_turn(
                 segment.native_thread_id, submitted_prompt, sandbox=segment.sandbox
             )
@@ -406,14 +425,36 @@ class AgentService:
                 db.add(AuditEvent(kind="turn.completed", subject_id=turn.id))
                 await db.commit()
                 return stored
-        except Exception:
+        except Exception as exc:
+            logger.exception("Agent turn %s failed", turn.id)
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)
                 stored.status = "failed"
+                stored.response = "Agent run failed. Check the Agent Web server log and try again."
                 await db.commit()
-            raise
+                return stored
         finally:
             self._active_projects.discard(project.id)
 
-    async def run_turn_background(self, *args) -> None:
-        await asyncio.create_task(self.create_turn(*args))
+    async def create_turn(self, session_id: str, prompt: str, request_id: str) -> Turn:
+        turn, created = await self.enqueue_turn(session_id, prompt, request_id)
+        if created:
+            return await self.execute_turn(turn.id)
+        return turn
+
+    async def get_turn(self, turn_id: str) -> Turn:
+        async with self.session_factory() as db:
+            turn = await db.get(Turn, turn_id)
+            if turn is None:
+                raise LookupError("Turn not found")
+            return turn
+
+    async def recover_interrupted_turns(self) -> int:
+        async with self.session_factory() as db:
+            interrupted = list((await db.scalars(select(Turn).where(Turn.status == "running"))).all())
+            for turn in interrupted:
+                turn.status = "failed"
+                turn.response = "Agent Web restarted before this response completed. Send the message again."
+                db.add(AuditEvent(kind="turn.interrupted", subject_id=turn.id))
+            await db.commit()
+            return len(interrupted)

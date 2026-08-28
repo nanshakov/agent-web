@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -58,6 +58,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def lifespan(app: FastAPI):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         migrate_database(settings.data_dir, settings.database_url)
+        await service.recover_interrupted_turns()
         app.state.update_status = {"state": "not_configured"}
 
         async def import_existing_sessions() -> None:
@@ -258,15 +259,23 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             raise error("not_found", str(exc), 404) from exc
 
     @app.post("/api/v1/sessions/{session_id}/turns")
-    async def add_turn(session_id: str, payload: TurnInput):
+    async def add_turn(session_id: str, payload: TurnInput, background_tasks: BackgroundTasks):
         try:
-            turn = await service.create_turn(session_id, payload.prompt, payload.client_request_id)
+            turn, created = await service.enqueue_turn(session_id, payload.prompt, payload.client_request_id)
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
         except RuntimeError as exc:
             raise error("project_busy", str(exc), 409) from exc
-        except Exception as exc:
-            raise error("turn_failed", str(exc), 502) from exc
+        if created:
+            background_tasks.add_task(service.execute_turn, turn.id)
+        return {"id": turn.id, "status": turn.status, "response": turn.response}
+
+    @app.get("/api/v1/turns/{turn_id}")
+    async def get_turn(turn_id: str):
+        try:
+            turn = await service.get_turn(turn_id)
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
         return {"id": turn.id, "status": turn.status, "response": turn.response}
 
     return app
