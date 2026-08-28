@@ -43,6 +43,26 @@ class FakeOpenCode(FakeCodex):
         return "opencode:fixture-session"
 
 
+class SyncingCodex(FakeCodex):
+    def __init__(self):
+        super().__init__()
+        self.history = [{"role": "user", "content": "initial"}]
+
+    async def thread_history(self, native_thread_id):
+        return self.history
+
+
+class LongHistoryCodex(FakeCodex):
+    async def thread_history(self, native_thread_id):
+        return [{"role": "user", "content": "x" * 120_001}]
+
+    async def run_turn(self, native_thread_id, prompt, *, sandbox):
+        self.prompts.append(prompt)
+        if prompt.startswith("Summarize the work"):
+            return "compact handoff summary"
+        return f"answered: {prompt}"
+
+
 def test_project_session_and_turn_lifecycle(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
@@ -153,3 +173,39 @@ def test_switching_agent_keeps_one_chat_and_hands_off_history(tmp_path: Path):
     assert "remember this" in opencode.prompts[-1]
     assert turn.status_code == 200
     assert len(context.json()["segments"]) == 2
+
+
+def test_opening_chat_syncs_new_native_messages(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    backend = SyncingCodex()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=backend)
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        assert client.get(f"/api/v1/sessions/{chat['id']}/messages").json()[-1]["content"] == "initial"
+        backend.history.append({"role": "assistant", "content": "written outside Agent Web"})
+        history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+    assert history[-1]["content"] == "written outside Agent Web"
+
+
+def test_long_history_uses_source_agent_summary_for_handoff(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    source, target = LongHistoryCodex(), FakeOpenCode()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)),
+                     backend={"codex": source, "opencode": target})
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
+            "agent": "opencode", "model": "test-model", "reasoning": "high",
+            "sandbox": "workspace_write", "approval_policy": "auto",
+        })
+        client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+            "prompt": "continue", "client_request_id": "request-0004"
+        })
+    assert any(prompt.startswith("Summarize the work") for prompt in source.prompts)
+    assert "compact handoff summary" in target.prompts[-1]

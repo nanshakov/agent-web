@@ -67,6 +67,18 @@ class Turn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ExternalMessage(Base):
+    """A message discovered later in an agent's native session history."""
+    __tablename__ = "external_messages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
+    segment_id: Mapped[str] = mapped_column(ForeignKey("agent_segments.id"), index=True)
+    position: Mapped[int] = mapped_column()
+    role: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
