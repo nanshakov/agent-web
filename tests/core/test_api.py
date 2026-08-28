@@ -91,6 +91,16 @@ def test_project_outside_allowed_root_is_rejected(tmp_path: Path):
     assert response.status_code == 422
 
 
+def test_non_git_folder_inside_allowed_root_is_accepted(tmp_path: Path):
+    root = tmp_path / "projects"
+    folder = root / "scratch"
+    folder.mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    with TestClient(app) as client:
+        response = client.post("/api/v1/projects", json={"name": "Scratch", "path": str(folder)})
+    assert response.status_code == 201
+
+
 def test_update_endpoint_reports_not_configured(tmp_path: Path):
     app = create_app(Settings(data_dir=tmp_path / "data"), backend=FakeCodex())
     with TestClient(app) as client:

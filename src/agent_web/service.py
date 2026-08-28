@@ -23,8 +23,8 @@ class AgentService:
 
     def validate_project_path(self, raw_path: str) -> Path:
         path = Path(raw_path).expanduser().resolve()
-        if not path.is_dir() or not (path / ".git").exists():
-            raise ValueError("Project must be an existing Git working tree")
+        if not path.is_dir():
+            raise ValueError("Project must be an existing directory")
         if not self.roots or not any(path.is_relative_to(root) for root in self.roots):
             raise ValueError("Project is outside configured allowed roots")
         return path
@@ -62,7 +62,7 @@ class AgentService:
             return project
 
     async def import_existing_codex_sessions(self) -> int:
-        """Import only threads whose Git cwd is already inside an allowed root."""
+        """Import only threads whose working directory is inside an allowed root."""
         backend = self.backends["codex"]
         threads = await backend.list_threads()
         imported = 0
@@ -73,7 +73,7 @@ class AgentService:
                 if not cwd or not native_id:
                     continue
                 path = Path(cwd).expanduser().resolve()
-                if not path.is_dir() or not (path / ".git").exists():
+                if not path.is_dir():
                     continue
                 if not any(path.is_relative_to(root) for root in self.roots):
                     continue
@@ -103,12 +103,12 @@ class AgentService:
         return imported
 
     async def import_cline_sessions(self, cline: ClineHistory) -> int:
-        """Import Cline tasks as read-only sessions when their Git project is allowed."""
+        """Import Cline tasks as read-only sessions when their folder is allowed."""
         imported = 0
         async with self.session_factory() as db:
             for task in cline.tasks():
                 path = Path(task["cwd"]).expanduser().resolve()
-                if not path.is_dir() or not (path / ".git").exists():
+                if not path.is_dir():
                     continue
                 if not any(path.is_relative_to(root) for root in self.roots):
                     continue

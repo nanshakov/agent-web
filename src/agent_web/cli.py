@@ -32,7 +32,7 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Create local configuration")
     init.add_argument("--root", type=Path, action="append")
-    init.add_argument("--discover-codex", action="store_true", help="Discover Git project cwd values from local Codex chats")
+    init.add_argument("--discover-codex", action="store_true", help="Discover allowed working folders from local Codex chats")
     configure_update = commands.add_parser("configure-update", help="Configure the Git source for application updates")
     configure_update.add_argument("--repository-url", required=True)
     configure_update.add_argument("--branch", default="main")
