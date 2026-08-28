@@ -92,6 +92,7 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
             json={"prompt": "hello", "client_request_id": "request-0001"},
         ))
         assert turn["response"] == "answered: hello"
+        assert turn["rendered_response"] == "<p>answered: hello</p>\n"
 
 
 def test_project_outside_allowed_root_is_rejected(tmp_path: Path):
@@ -150,6 +151,7 @@ def test_imported_session_history_is_available(tmp_path: Path):
         session = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
         history = client.get(f"/api/v1/sessions/{session['id']}/messages")
     assert history.json()[-1]["content"] == "Earlier answer"
+    assert history.json()[-1]["rendered_content"] == "<p>Earlier answer</p>\n"
 
 
 def test_opencode_can_be_selected_per_project(tmp_path: Path):

@@ -16,6 +16,7 @@ from agent_web.codex.sdk_backend import SdkCodexBackend
 from agent_web.opencode_acp import OpenCodeAcpBackend
 from agent_web.config import Settings
 from agent_web.db.database import create_database, migrate_database
+from agent_web.markdown import render_markdown
 from agent_web.service import AgentService
 from agent_web.updater import UpdateError, Updater
 
@@ -238,7 +239,18 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def session_messages(session_id: str):
         try:
-            return await service.session_history(session_id)
+            messages = await service.session_history(session_id)
+            return [
+                {
+                    **message,
+                    **(
+                        {"rendered_content": render_markdown(message["content"])}
+                        if message["role"] == "assistant"
+                        else {}
+                    ),
+                }
+                for message in messages
+            ]
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
         except Exception as exc:
@@ -268,7 +280,8 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             raise error("project_busy", str(exc), 409) from exc
         if created:
             background_tasks.add_task(service.execute_turn, turn.id)
-        return {"id": turn.id, "status": turn.status, "response": turn.response}
+        return {"id": turn.id, "status": turn.status, "response": turn.response,
+                "rendered_response": render_markdown(turn.response)}
 
     @app.get("/api/v1/turns/{turn_id}")
     async def get_turn(turn_id: str):
@@ -276,6 +289,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             turn = await service.get_turn(turn_id)
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
-        return {"id": turn.id, "status": turn.status, "response": turn.response}
+        return {"id": turn.id, "status": turn.status, "response": turn.response,
+                "rendered_response": render_markdown(turn.response)}
 
     return app
