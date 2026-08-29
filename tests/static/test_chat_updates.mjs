@@ -4,12 +4,14 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const elements = new Map();
+const scrollIntoViewCalls = [];
 const element = (name) => ({
   hidden: false,
   innerHTML: '',
   textContent: '',
   scrollHeight: 240,
   scrollTop: 0,
+  scrollIntoView: (options) => scrollIntoViewCalls.push({name, options}),
   querySelector: () => ({disabled: false}),
 });
 for (const name of ['#project-form', '#turn-form', '#messages', '#session-title', '#chat', '#chat-settings', '#limits']) {
@@ -55,6 +57,14 @@ const messages = elements.get('#messages');
 
 test('opening a chat scrolls to the latest message', () => {
   assert.equal(messages.scrollTop, messages.scrollHeight);
+});
+
+test('opening a chat reveals and scrolls to the chat workspace', () => {
+  assert.equal(elements.get('#chat').hidden, false);
+  const scroll = scrollIntoViewCalls.at(-1);
+  assert.equal(scroll.name, '#chat');
+  assert.equal(scroll.options.behavior, 'smooth');
+  assert.equal(scroll.options.block, 'start');
 });
 
 test('later consecutive agent messages appear', async () => {
