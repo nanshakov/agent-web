@@ -15,15 +15,22 @@ class FakeCodex:
 
     def __init__(self):
         self.prompts = []
+        self.runs = []
+        self.started_threads = 0
 
     async def health(self):
         return True, "ready"
 
     async def models(self):
-        return [{"id": "test-model", "name": "Test model", "default": True,
-                 "reasoning_efforts": ["low", "high"], "default_reasoning": "low"}]
+        return [
+            {"id": "test-model", "name": "Test model", "default": True,
+             "reasoning_efforts": ["low", "high"], "default_reasoning": "low"},
+            {"id": "other-model", "name": "Other model", "default": False,
+             "reasoning_efforts": ["low", "high"], "default_reasoning": "low"},
+        ]
 
     async def start_thread(self, cwd: Path, *, model, sandbox, reasoning=None, approval_policy="auto"):
+        self.started_threads += 1
         return "fixture-thread"
 
     async def thread_history(self, native_thread_id):
@@ -33,8 +40,9 @@ class FakeCodex:
     async def list_threads(self, limit=100):
         return []
 
-    async def run_turn(self, native_thread_id, prompt, *, sandbox):
+    async def run_turn(self, native_thread_id, prompt, *, sandbox, model=None, reasoning=None):
         self.prompts.append(prompt)
+        self.runs.append({"thread": native_thread_id, "model": model, "reasoning": reasoning})
         return f"answered: {prompt}"
 
     async def interrupt(self, native_thread_id):
@@ -43,6 +51,7 @@ class FakeCodex:
 
 class FakeOpenCode(FakeCodex):
     async def start_thread(self, cwd: Path, *, model, sandbox, reasoning=None, approval_policy="auto"):
+        self.started_threads += 1
         return "opencode:fixture-session"
 
 
@@ -71,8 +80,9 @@ class LongHistoryCodex(FakeCodex):
     async def thread_history(self, native_thread_id):
         return [{"role": "user", "content": "x" * 120_001}]
 
-    async def run_turn(self, native_thread_id, prompt, *, sandbox):
+    async def run_turn(self, native_thread_id, prompt, *, sandbox, model=None, reasoning=None):
         self.prompts.append(prompt)
+        self.runs.append({"thread": native_thread_id, "model": model, "reasoning": reasoning})
         if prompt.startswith("Summarize the work"):
             return "compact handoff summary"
         return f"answered: {prompt}"
@@ -293,7 +303,7 @@ def test_switching_agent_keeps_one_chat_and_hands_off_history(tmp_path: Path):
         }))
         switched = client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
             "agent": "opencode", "model": "test-model", "reasoning": "high",
-            "sandbox": "workspace_write", "approval_policy": "auto",
+            "sandbox": "workspace_write", "approval_policy": "auto", "transfer_context": True,
         })
         turn = completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
             "prompt": "continue", "client_request_id": "request-0003"
@@ -304,6 +314,73 @@ def test_switching_agent_keeps_one_chat_and_hands_off_history(tmp_path: Path):
     assert "remember this" in opencode.prompts[-1]
     assert turn["status"] == "completed"
     assert len(context.json()["segments"]) == 2
+
+
+def test_switching_codex_model_reuses_native_thread_without_handoff(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    codex = FakeCodex()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=codex)
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+            "prompt": "before model switch", "client_request_id": "request-before-model-switch",
+        }))
+        switched = client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
+            "agent": "codex", "model": "other-model", "reasoning": "high",
+            "sandbox": "workspace_write", "approval_policy": "auto",
+        })
+        completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+            "prompt": "continue natively", "client_request_id": "request-model-switch",
+        }))
+        context = client.get(f"/api/v1/sessions/{chat['id']}/context").json()
+    assert switched.status_code == 201
+    assert codex.started_threads == 1
+    assert codex.runs[-1] == {"thread": "fixture-thread", "model": "other-model", "reasoning": "high"}
+    assert "Previous chat" not in codex.prompts[-1]
+    assert len(context["segments"]) == 1
+    answer_models = [item["model"] for item in context["messages"]
+                     if item["content"].startswith("answered:")]
+    assert answer_models == ["", "other-model"]
+
+
+def test_cross_agent_switch_requires_explicit_context_consent(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)),
+                     backend={"codex": FakeCodex(), "opencode": FakeOpenCode()})
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        switched = client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
+            "agent": "opencode", "model": "test-model", "reasoning": "high",
+            "sandbox": "workspace_write", "approval_policy": "auto",
+        })
+    assert switched.status_code == 422
+    assert switched.json()["detail"]["code"] == "invalid_agent_settings"
+
+
+def test_cross_agent_switch_can_start_without_context(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    target = FakeOpenCode()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)),
+                     backend={"codex": FakeCodex(), "opencode": target})
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
+            "agent": "opencode", "model": "test-model", "reasoning": "high",
+            "sandbox": "workspace_write", "approval_policy": "auto", "transfer_context": False,
+        })
+        completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
+            "prompt": "start clean", "client_request_id": "request-clean-switch",
+        }))
+    assert target.prompts[-1] == "start clean"
 
 
 def test_opening_chat_syncs_new_native_messages(tmp_path: Path):
@@ -356,7 +433,7 @@ def test_long_history_uses_source_agent_summary_for_handoff(tmp_path: Path):
         chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
         client.post(f"/api/v1/sessions/{chat['id']}/switch", json={
             "agent": "opencode", "model": "test-model", "reasoning": "high",
-            "sandbox": "workspace_write", "approval_policy": "auto",
+            "sandbox": "workspace_write", "approval_policy": "auto", "transfer_context": True,
         })
         completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={
             "prompt": "continue", "client_request_id": "request-0004"

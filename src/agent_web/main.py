@@ -41,7 +41,7 @@ class ProjectAgentSettingsInput(BaseModel):
 
 
 class SessionSwitchInput(ProjectAgentSettingsInput):
-    pass
+    transfer_context: bool | None = None
 
 
 def error(code: str, message: str, status: int) -> HTTPException:
@@ -225,7 +225,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 raise ValueError("Selected reasoning level is not supported by this model")
             segment = await service.switch_session(
                 session_id, agent=payload.agent, model=payload.model, reasoning=payload.reasoning,
-                sandbox=payload.sandbox,
+                sandbox=payload.sandbox, transfer_context=payload.transfer_context,
             )
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc

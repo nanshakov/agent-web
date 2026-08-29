@@ -5,6 +5,8 @@ import vm from 'node:vm';
 
 const elements = new Map();
 const scrollIntoViewCalls = [];
+const confirmations = [];
+const switchRequests = [];
 const element = (name) => ({
   hidden: false,
   innerHTML: '',
@@ -12,6 +14,7 @@ const element = (name) => ({
   scrollHeight: 240,
   scrollTop: 0,
   scrollIntoView: (options) => scrollIntoViewCalls.push({name, options}),
+  insertAdjacentHTML: (_position, markup) => { elements.get(name).innerHTML += markup; },
   querySelector: () => ({disabled: false}),
 });
 for (const name of ['#project-form', '#turn-form', '#messages', '#session-title', '#chat', '#chat-settings', '#limits']) {
@@ -45,6 +48,7 @@ const context = vm.createContext({
   URL,
   Blob,
   FormData,
+  confirm: (message) => { confirmations.push(message); return false; },
 });
 
 let source = fs.readFileSync(new URL('../../src/agent_web/static/app.js', import.meta.url), 'utf8');
@@ -78,6 +82,26 @@ test('later consecutive agent messages appear', async () => {
   assert.ok(intervals.length > 0, 'an open chat must schedule history refreshes');
   await intervals.at(-1)();
   assert.match(messages.innerHTML, /First[\s\S]*Second/);
+});
+
+test('context consent is requested only when changing agents', async () => {
+  context.switchRequests = switchRequests;
+  vm.runInContext(`
+    activeSession='chat-1';
+    agents={codex:{models:[]},opencode:{models:[]}};
+    request=async(path,options)=>{const body=JSON.parse(options.body);switchRequests.push(body);return {agent:body.agent,model:body.model}};
+    chatSettings={agent:'codex',model:'test-model',reasoning:'low',sandbox:'workspace_write'};
+    selectedChatSettings=()=>({agent:'codex',model:'other-model',reasoning:'low',sandbox:'workspace_write'});
+  `, context);
+  await vm.runInContext('applyChatSettings()', context);
+  assert.equal(confirmations.length, 0);
+  assert.equal(switchRequests.at(-1).transfer_context, null);
+
+  vm.runInContext(`selectedChatSettings=()=>({agent:'opencode',model:null,reasoning:null,sandbox:'workspace_write'})`, context);
+  await vm.runInContext('applyChatSettings()', context);
+  assert.equal(confirmations.length, 1);
+  assert.match(confirmations[0], /Передать историю чата/);
+  assert.equal(switchRequests.at(-1).transfer_context, false);
 });
 
 test('agent usage readout follows the selected agent', () => {

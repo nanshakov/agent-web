@@ -32,7 +32,10 @@ class CodexBackend(Protocol):
 
     async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]: ...
 
-    async def run_turn(self, native_thread_id: str, prompt: str, *, sandbox: str) -> str: ...
+    async def run_turn(
+        self, native_thread_id: str, prompt: str, *, sandbox: str,
+        model: str | None = None, reasoning: str | None = None,
+    ) -> str: ...
 
     async def interrupt(self, native_thread_id: str) -> bool: ...
 
@@ -67,7 +70,10 @@ class UnavailableCodexBackend:
     async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]:
         return []
 
-    async def run_turn(self, native_thread_id: str, prompt: str, *, sandbox: str) -> str:
+    async def run_turn(
+        self, native_thread_id: str, prompt: str, *, sandbox: str,
+        model: str | None = None, reasoning: str | None = None,
+    ) -> str:
         raise RuntimeError(self.reason)
 
     async def interrupt(self, native_thread_id: str) -> bool:

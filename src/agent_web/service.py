@@ -206,9 +206,9 @@ class AgentService:
         )]
 
     async def switch_session(self, session_id: str, *, agent: str, model: str | None,
-                             reasoning: str | None, sandbox: str) -> AgentSegment:
-        """Create the next native segment. Its context goes with the next turn."""
-        history = await self.session_history(session_id)
+                             reasoning: str | None, sandbox: str,
+                             transfer_context: bool | None = None) -> AgentSegment:
+        """Continue the native agent or start a consent-gated cross-agent segment."""
         async with self.session_factory() as db:
             session = await self._visible_session(db, session_id)
             project = await db.get(Project, session.project_id)
@@ -217,7 +217,21 @@ class AgentService:
             if project.id in self._active_projects:
                 raise RuntimeError("Wait for the current answer before switching")
             source = await self._active_segment(db, session_id)
-        handoff_history = await self._prepare_handoff_context(history, source, project)
+            if source.agent == agent:
+                source.model = model
+                source.reasoning = reasoning
+                source.sandbox = sandbox
+                db.add(AuditEvent(kind="chat.agent_settings_updated", subject_id=session_id,
+                                  detail=f"{agent}:{model or 'default'}"))
+                await db.commit()
+                await db.refresh(source)
+                return source
+        if transfer_context is None:
+            raise ValueError("Explicit context-transfer consent is required when changing agents")
+        handoff_history = []
+        if transfer_context:
+            history = await self.session_history(session_id)
+            handoff_history = await self._prepare_handoff_context(history, source, project)
         backend = self.backends.get(agent)
         if backend is None:
             raise ValueError(f"Agent '{agent}' is not available")
@@ -227,11 +241,13 @@ class AgentService:
             active = await self._active_segment(db, session_id)
             active.status = "superseded"
             segment = AgentSegment(session_id=session_id, native_thread_id=native_id, agent=agent,
-                                   model=model, reasoning=reasoning, sandbox=sandbox, handoff_pending=True,
-                                   handoff_context=json.dumps(handoff_history))
+                                   model=model, reasoning=reasoning, sandbox=sandbox,
+                                   handoff_pending=bool(handoff_history),
+                                   handoff_context=json.dumps(handoff_history) if handoff_history else None)
             db.add(segment)
             db.add(AuditEvent(kind="chat.agent_switched", subject_id=session_id,
-                              detail=f"{active.agent}->{agent}"))
+                              detail=(f"{active.agent}->{agent};context="
+                                      f"{'transferred' if transfer_context else 'omitted'}")))
             await db.commit()
             await db.refresh(segment)
             return segment
@@ -252,7 +268,7 @@ class AgentService:
                     "Summarize the work so far for another coding agent. Include goals, decisions, "
                     "files changed, tests, open problems, and any secrets or credentials already "
                     "present in the conversation. Do not use tools and do not change files.",
-                    sandbox="read_only",
+                    sandbox="read_only", model=source.model, reasoning=source.reasoning,
                 )
             except Exception:
                 summary = ""
@@ -330,39 +346,58 @@ class AgentService:
                 ExternalMessage.session_id == session_id).order_by(ExternalMessage.position))).all())
         messages = []
         for segment in segments:
-            metadata = {"agent": segment.agent, "model": segment.model or "", "reasoning": segment.reasoning or ""}
+            metadata = {
+                "agent": segment.agent,
+                "model": segment.model or "",
+                "reasoning": segment.reasoning or "",
+            }
             segment_turns = [item for item in stored_turns if item.segment_id == segment.id]
+
+            def turn_metadata(turn: Turn) -> dict[str, str]:
+                if turn.agent is not None:
+                    return {
+                        "agent": turn.agent,
+                        "model": turn.model or "",
+                        "reasoning": turn.reasoning or "",
+                    }
+                return {
+                    "agent": segment.agent,
+                    "model": segment.model or "",
+                    "reasoning": segment.reasoning or "",
+                }
             if segment.status == "active" and live_history is not None:
-                unmatched = self._turn_messages(segment_turns)
+                unmatched_turns = list(segment_turns)
                 submitted = {}
                 for turn in segment_turns:
                     submitted.setdefault(turn.agent_prompt or turn.prompt, []).append(turn)
+                current_metadata = metadata
                 for item in live_history:
                     display = {"role": item["role"], "content": item["content"]}
                     if item["role"] == "user" and submitted.get(item["content"]):
                         matched = submitted[item["content"]].pop(0)
                         display = {"role": "user", "content": matched.prompt,
                                    "attachments": load_metadata(matched.attachments_json)}
-                    messages.append({**display, **metadata})
-                    try:
-                        unmatched.remove(display)
-                    except ValueError:
-                        pass
-                messages.extend({**item, **metadata} for item in unmatched)
+                        current_metadata = turn_metadata(matched)
+                        unmatched_turns.remove(matched)
+                    messages.append({**display, **current_metadata})
+                for turn in unmatched_turns:
+                    messages.extend({**item, **turn_metadata(turn)} for item in self._turn_messages([turn]))
                 continue
             for item in (message for message in external if message.segment_id == segment.id):
                 matching = next((turn for turn in segment_turns
                                  if item.role == "user" and (turn.agent_prompt or turn.prompt) == item.content), None)
                 if matching:
                     messages.append({"role": "user", "content": matching.prompt,
-                                     "attachments": load_metadata(matching.attachments_json), **metadata})
+                                     "attachments": load_metadata(matching.attachments_json),
+                                     **turn_metadata(matching)})
                 else:
                     messages.append({"role": item.role, "content": item.content, **metadata})
             for turn in segment_turns:
+                item_metadata = turn_metadata(turn)
                 messages.extend((
                     {"role": "user", "content": turn.prompt,
-                     "attachments": load_metadata(turn.attachments_json), **metadata},
-                    {"role": "assistant", "content": turn.response or "", **metadata},
+                     "attachments": load_metadata(turn.attachments_json), **item_metadata},
+                    {"role": "assistant", "content": turn.response or "", **item_metadata},
                 ))
         return messages
 
@@ -424,6 +459,9 @@ class AgentService:
             turn = Turn(session_id=session.id, segment_id=segment.id, client_request_id=request_id,
                         prompt=prompt, agent_prompt=submitted if attachments else None,
                         attachments_json=json.dumps(attachments) if attachments else None, status="running")
+            turn.agent, turn.model, turn.reasoning, turn.sandbox = (
+                segment.agent, segment.model, segment.reasoning, segment.sandbox
+            )
             db.add(turn)
             db.add(AuditEvent(kind="turn.started", subject_id=turn.id))
             await db.commit()
@@ -457,7 +495,8 @@ class AgentService:
                 earlier = json.loads(segment.handoff_context or "[]")
                 submitted_prompt = self._handoff_prompt(earlier, submitted_prompt)
             response = await backend.run_turn(
-                segment.native_thread_id, submitted_prompt, sandbox=segment.sandbox
+                segment.native_thread_id, submitted_prompt, sandbox=turn.sandbox or segment.sandbox,
+                model=turn.model, reasoning=turn.reasoning,
             )
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)

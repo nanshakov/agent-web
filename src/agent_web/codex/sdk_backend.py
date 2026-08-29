@@ -138,15 +138,24 @@ class SdkCodexBackend:
             for thread in response.data
         ]
 
-    async def run_turn(self, native_thread_id: str, prompt: str, *, sandbox: str) -> str:
+    async def run_turn(
+        self, native_thread_id: str, prompt: str, *, sandbox: str,
+        model: str | None = None, reasoning: str | None = None,
+    ) -> str:
         from openai_codex import Sandbox  # type: ignore[import-not-found]
+        from openai_codex.generated.v2_all import ReasoningEffort  # type: ignore[import-not-found]
 
         thread = self._threads.get(native_thread_id)
         if thread is None:
             codex = await self._client()
             thread = await codex.thread_resume(native_thread_id)
             self._threads[native_thread_id] = thread
-        result = await thread.run(prompt, sandbox=getattr(Sandbox, sandbox))
+        result = await thread.run(
+            prompt,
+            sandbox=getattr(Sandbox, sandbox),
+            model=model,
+            effort=ReasoningEffort(reasoning) if reasoning else None,
+        )
         return result.final_response
 
     async def interrupt(self, native_thread_id: str) -> bool:
