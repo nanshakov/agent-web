@@ -12,7 +12,7 @@ const element = (name) => ({
   scrollTop: 0,
   querySelector: () => ({disabled: false}),
 });
-for (const name of ['#project-form', '#turn-form', '#messages', '#session-title', '#chat', '#chat-settings']) {
+for (const name of ['#project-form', '#turn-form', '#messages', '#session-title', '#chat', '#chat-settings', '#limits']) {
   elements.set(name, element(name));
 }
 
@@ -42,6 +42,7 @@ const context = vm.createContext({
   setTimeout,
   URL,
   Blob,
+  FormData,
 });
 
 let source = fs.readFileSync(new URL('../../src/agent_web/static/app.js', import.meta.url), 'utf8');
@@ -60,4 +61,12 @@ test('later consecutive agent messages appear', async () => {
   assert.ok(intervals.length > 0, 'an open chat must schedule history refreshes');
   await intervals.at(-1)();
   assert.match(messages.innerHTML, /First[\s\S]*Second/);
+});
+
+test('agent usage readout follows the selected agent', () => {
+  vm.runInContext(`agents={codex:{usage:{available:true,plan_type:'chatgpt_plus',primary:{remaining_percent:72,window_duration_mins:300},credits:{balance:'12.5'}}},opencode:{usage:{available:true,local:true}}}`, context);
+  vm.runInContext("renderAgentUsage('codex')", context);
+  assert.match(elements.get('#limits').textContent, /Codex · Plus · 5h: 72% left · Credits: 12.5/);
+  vm.runInContext("renderAgentUsage('opencode')", context);
+  assert.equal(elements.get('#limits').textContent, 'OpenCode · Local LM Studio · no cloud limit');
 });

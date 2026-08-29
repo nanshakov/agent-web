@@ -86,6 +86,13 @@ class OpenCodeAcpBackend:
         return [{"id": "lm-studio/qwen/qwen3.8-27b", "name": "Qwen 3.8 27B (LM Studio)",
                  "default": True, "reasoning_efforts": [], "default_reasoning": ""}]
 
+    async def usage(self) -> dict[str, object]:
+        return {
+            "available": True,
+            "local": True,
+            "message": "Local LM Studio model; no cloud limit applies.",
+        }
+
     async def _open(self, cwd: Path, sandbox: str) -> tuple[Any, _Session]:
         client = _OpenCodeClient()
         environment = dict(os.environ)

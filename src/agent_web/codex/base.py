@@ -21,6 +21,8 @@ class CodexBackend(Protocol):
 
     async def models(self) -> list[dict[str, object]]: ...
 
+    async def usage(self) -> dict[str, object]: ...
+
     async def start_thread(
         self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None,
         approval_policy: str = "auto",
@@ -49,6 +51,9 @@ class UnavailableCodexBackend:
 
     async def models(self) -> list[dict[str, object]]:
         return []
+
+    async def usage(self) -> dict[str, object]:
+        return {"available": False, "message": self.reason}
 
     async def start_thread(
         self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None,

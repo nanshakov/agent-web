@@ -46,6 +46,18 @@ class FakeOpenCode(FakeCodex):
         return "opencode:fixture-session"
 
 
+class UsageCodex(FakeCodex):
+    async def usage(self):
+        return {
+            "available": True,
+            "plan_type": "chatgpt_plus",
+            "primary": {"remaining_percent": 72, "window_duration_mins": 300,
+                        "resets_at": 1_800_000_000},
+            "secondary": None,
+            "credits": {"balance": "12.5", "has_credits": True, "unlimited": False},
+        }
+
+
 class SyncingCodex(FakeCodex):
     def __init__(self):
         super().__init__()
@@ -224,6 +236,15 @@ def test_project_agent_settings_and_codex_status(tmp_path: Path):
     assert saved.json()["sandbox"] == "read_only"
     assert status.json()["models"][0]["id"] == "test-model"
     assert status.json()["usage"]["available"] is False
+
+
+def test_agent_list_includes_codex_usage(tmp_path: Path):
+    app = create_app(Settings(data_dir=tmp_path / "data"), backend=UsageCodex())
+    with TestClient(app) as client:
+        codex = client.get("/api/v1/agents").json()["codex"]
+
+    assert codex["usage"]["primary"]["remaining_percent"] == 72
+    assert codex["usage"]["credits"]["balance"] == "12.5"
 
 
 def test_imported_session_history_is_available(tmp_path: Path):

@@ -51,6 +51,41 @@ class SdkCodexBackend:
             })
         return catalog
 
+    async def usage(self) -> dict[str, object]:
+        """Read the current account rate-limit snapshot from Codex app-server."""
+        from openai_codex.generated.v2_all import (  # type: ignore[import-not-found]
+            GetAccountRateLimitsResponse,
+        )
+
+        codex = await self._client()
+        response = await codex._client.request(
+            "account/rateLimits/read", None, response_model=GetAccountRateLimitsResponse
+        )
+        limits = response.rate_limits
+
+        def window(value):
+            if value is None:
+                return None
+            return {
+                "used_percent": value.used_percent,
+                "remaining_percent": max(0, 100 - value.used_percent),
+                "resets_at": value.resets_at,
+                "window_duration_mins": value.window_duration_mins,
+            }
+
+        credits = limits.credits
+        return {
+            "available": True,
+            "plan_type": limits.plan_type.value if limits.plan_type else None,
+            "primary": window(limits.primary),
+            "secondary": window(limits.secondary),
+            "credits": None if credits is None else {
+                "balance": credits.balance,
+                "has_credits": credits.has_credits,
+                "unlimited": credits.unlimited,
+            },
+        }
+
     async def start_thread(
         self, cwd: Path, *, model: str | None, sandbox: str, reasoning: str | None = None,
         approval_policy: str = "auto",

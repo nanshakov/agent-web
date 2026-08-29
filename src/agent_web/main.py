@@ -100,6 +100,20 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     app.state.settings = settings
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
+    async def agent_usage(name: str, item) -> dict[str, object]:
+        usage = getattr(item, "usage", None)
+        if usage is None:
+            if name == "opencode":
+                return {"available": True, "local": True,
+                        "message": "Local LM Studio model; no cloud limit applies."}
+            return {"available": False, "message": "Codex usage is unavailable."}
+        try:
+            return await usage()
+        except Exception as exc:
+            message = "Sign in to Codex to view usage." if "authentication required" in str(exc).lower() \
+                else "Codex usage is temporarily unavailable."
+            return {"available": False, "message": message}
+
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request):
         return templates.TemplateResponse(request, "index.html", {"lan_mode": settings.host == "0.0.0.0"})
@@ -122,10 +136,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             models = []
         return {
             "models": models,
-            "usage": {
-                "available": False,
-                "message": "Remaining limits are not available through the local Codex SDK.",
-            },
+            "usage": await agent_usage("codex", backends["codex"]),
         }
 
     @app.get("/api/v1/update")
@@ -144,7 +155,12 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         result = {}
         for name, item in backends.items():
             ready, detail = await item.health()
-            result[name] = {"ready": ready, "detail": detail, "models": await item.models() if ready else []}
+            result[name] = {
+                "ready": ready,
+                "detail": detail,
+                "models": await item.models() if ready else [],
+                "usage": await agent_usage(name, item),
+            }
         return result
 
     @app.post("/api/v1/projects", status_code=201)
