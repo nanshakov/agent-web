@@ -103,6 +103,40 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
         assert legacy_sessions[0]["title"] == "hello"
 
 
+def test_turn_accepts_attachments_and_removes_them_with_chat(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    backend = FakeCodex()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=backend)
+
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        turn = completed_turn(client, client.post(
+            f"/api/v1/sessions/{chat['id']}/turns",
+            data={"prompt": "", "client_request_id": "attachment-request"},
+            files=[
+                ("files", ("notes.txt", b"important attachment text", "text/plain")),
+                ("files", ("diagram.png", b"fake image bytes", "image/png")),
+            ],
+        ))
+
+        assert turn["status"] == "completed"
+        assert "important attachment text" in backend.prompts[-1]
+        assert str(repo / ".agent-web" / "attachments" / chat["id"]) in backend.prompts[-1]
+        history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+        user_message = next(message for message in history if message.get("attachments"))
+        assert user_message["content"] == ""
+        assert [item["name"] for item in user_message["attachments"]] == ["notes.txt", "diagram.png"]
+        attachment_dir = repo / ".agent-web" / "attachments" / chat["id"]
+        assert len(list(attachment_dir.iterdir())) == 2
+        assert ".agent-web/" in (repo / ".git" / "info" / "exclude").read_text("utf-8")
+
+        assert client.delete(f"/api/v1/sessions/{chat['id']}").status_code == 204
+        assert not attachment_dir.exists()
+
+
 def test_deleting_chat_archives_it_and_blocks_access(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"

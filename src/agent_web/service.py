@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from agent_web.attachments import agent_prompt, attachment_directory, load_metadata, store_uploads
 from agent_web.cline import ClineHistory
 from agent_web.codex.base import CodexBackend
 from agent_web.db.models import AgentSegment, AgentSession, AuditEvent, ExternalMessage, Project, Turn
@@ -178,9 +180,15 @@ class AgentService:
             ).limit(1))
             if busy is not None:
                 raise RuntimeError("Wait for the current answer before deleting this chat")
+            project = await db.get(Project, session.project_id)
+            if project is None:
+                raise LookupError("Project not found")
             session.archived = True
             db.add(AuditEvent(kind="session.archived", subject_id=session.id))
             await db.commit()
+        directory = attachment_directory(Path(project.path), session_id)
+        if directory.is_dir():
+            shutil.rmtree(directory)
 
     async def _active_segment(self, db, session_id: str) -> AgentSegment:
         segment = await db.scalar(select(AgentSegment).where(
@@ -191,9 +199,9 @@ class AgentService:
         return segment
 
     @staticmethod
-    def _turn_messages(turns: list[Turn]) -> list[dict[str, str]]:
+    def _turn_messages(turns: list[Turn]) -> list[dict[str, object]]:
         return [message for turn in turns for message in (
-            {"role": "user", "content": turn.prompt},
+            {"role": "user", "content": turn.prompt, "attachments": load_metadata(turn.attachments_json)},
             {"role": "assistant", "content": turn.response or ""},
         )]
 
@@ -303,7 +311,7 @@ class AgentService:
         imported, _ = await self._sync_external_history(session_id)
         return imported
 
-    async def session_history(self, session_id: str) -> list[dict[str, str]]:
+    async def session_history(self, session_id: str) -> list[dict[str, object]]:
         live_history = None
         try:
             _, live_history = await self._sync_external_history(session_id)
@@ -326,19 +334,34 @@ class AgentService:
             segment_turns = [item for item in stored_turns if item.segment_id == segment.id]
             if segment.status == "active" and live_history is not None:
                 unmatched = self._turn_messages(segment_turns)
+                submitted = {}
+                for turn in segment_turns:
+                    submitted.setdefault(turn.agent_prompt or turn.prompt, []).append(turn)
                 for item in live_history:
-                    messages.append({"role": item["role"], "content": item["content"], **metadata})
+                    display = {"role": item["role"], "content": item["content"]}
+                    if item["role"] == "user" and submitted.get(item["content"]):
+                        matched = submitted[item["content"]].pop(0)
+                        display = {"role": "user", "content": matched.prompt,
+                                   "attachments": load_metadata(matched.attachments_json)}
+                    messages.append({**display, **metadata})
                     try:
-                        unmatched.remove({"role": item["role"], "content": item["content"]})
+                        unmatched.remove(display)
                     except ValueError:
                         pass
                 messages.extend({**item, **metadata} for item in unmatched)
                 continue
             for item in (message for message in external if message.segment_id == segment.id):
-                messages.append({"role": item.role, "content": item.content, **metadata})
+                matching = next((turn for turn in segment_turns
+                                 if item.role == "user" and (turn.agent_prompt or turn.prompt) == item.content), None)
+                if matching:
+                    messages.append({"role": "user", "content": matching.prompt,
+                                     "attachments": load_metadata(matching.attachments_json), **metadata})
+                else:
+                    messages.append({"role": item.role, "content": item.content, **metadata})
             for turn in segment_turns:
                 messages.extend((
-                    {"role": "user", "content": turn.prompt, **metadata},
+                    {"role": "user", "content": turn.prompt,
+                     "attachments": load_metadata(turn.attachments_json), **metadata},
                     {"role": "assistant", "content": turn.response or "", **metadata},
                 ))
         return messages
@@ -381,7 +404,8 @@ class AgentService:
             f"--- Previous chat ---\n{transcript}\n--- End previous chat ---\n\nCurrent user request:\n{prompt}"
         )
 
-    async def enqueue_turn(self, session_id: str, prompt: str, request_id: str) -> tuple[Turn, bool]:
+    async def enqueue_turn(self, session_id: str, prompt: str, request_id: str,
+                           uploads: list[object] | None = None) -> tuple[Turn, bool]:
         async with self.session_factory() as db:
             existing = await db.scalar(select(Turn).where(Turn.client_request_id == request_id))
             if existing:
@@ -393,10 +417,13 @@ class AgentService:
             if project.id in self._active_projects:
                 raise RuntimeError("Project already has an active turn")
             segment = await self._active_segment(db, session.id)
+            attachments = await store_uploads(Path(project.path), session.id, uploads or [])
             if session.title is None:
-                session.title = chat_title(prompt)
+                session.title = chat_title(prompt or (str(attachments[0]["name"]) if attachments else ""))
+            submitted = agent_prompt(Path(project.path), prompt, attachments)
             turn = Turn(session_id=session.id, segment_id=segment.id, client_request_id=request_id,
-                        prompt=prompt, status="running")
+                        prompt=prompt, agent_prompt=submitted if attachments else None,
+                        attachments_json=json.dumps(attachments) if attachments else None, status="running")
             db.add(turn)
             db.add(AuditEvent(kind="turn.started", subject_id=turn.id))
             await db.commit()
@@ -425,10 +452,10 @@ class AgentService:
             register = getattr(backend, "register_thread", None)
             if register is not None:
                 register(segment.native_thread_id, Path(project.path))
-            submitted_prompt = turn.prompt
+            submitted_prompt = turn.agent_prompt or turn.prompt
             if segment.handoff_pending:
                 earlier = json.loads(segment.handoff_context or "[]")
-                submitted_prompt = self._handoff_prompt(earlier, turn.prompt)
+                submitted_prompt = self._handoff_prompt(earlier, submitted_prompt)
             response = await backend.run_turn(
                 segment.native_thread_id, submitted_prompt, sandbox=segment.sandbox
             )

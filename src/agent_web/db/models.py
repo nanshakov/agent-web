@@ -62,6 +62,8 @@ class Turn(Base):
     segment_id: Mapped[str | None] = mapped_column(ForeignKey("agent_segments.id"), nullable=True, index=True)
     client_request_id: Mapped[str] = mapped_column(String(100), unique=True)
     prompt: Mapped[str] = mapped_column(Text())
+    agent_prompt: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="queued")
     response: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

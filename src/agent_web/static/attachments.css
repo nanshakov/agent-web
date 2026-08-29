@@ -1,0 +1,35 @@
+.attachment-picker {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  padding: 8px 11px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.attachment-picker:hover { border-color: var(--accent-dim); color: var(--accent); }
+.attachment-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.attachment {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+#selected-files { grid-column: 1 / -1; }
+.composer > #selected-files .attachments { margin-top: -6px; }

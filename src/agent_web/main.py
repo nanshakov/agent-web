@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,7 +28,7 @@ class ProjectInput(BaseModel):
 
 
 class TurnInput(BaseModel):
-    prompt: str = Field(min_length=1)
+    prompt: str = ""
     client_request_id: str = Field(min_length=8, max_length=100)
 
 
@@ -289,13 +290,36 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             raise error("not_found", str(exc), 404) from exc
 
     @app.post("/api/v1/sessions/{session_id}/turns")
-    async def add_turn(session_id: str, payload: TurnInput, background_tasks: BackgroundTasks):
+    async def add_turn(session_id: str, request: Request, background_tasks: BackgroundTasks):
+        uploads = []
+        if request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
+            form = await request.form(max_files=sys.maxsize, max_fields=sys.maxsize,
+                                      max_part_size=sys.maxsize)
+            prompt = str(form.get("prompt", ""))
+            request_id = str(form.get("client_request_id", ""))
+            uploads = [item for item in form.getlist("files")
+                       if getattr(item, "filename", None) and hasattr(item, "read")]
+        else:
+            try:
+                payload = TurnInput.model_validate(await request.json())
+            except Exception as exc:
+                raise error("invalid_turn", "Invalid turn payload", 422) from exc
+            prompt, request_id = payload.prompt, payload.client_request_id
+        if not 8 <= len(request_id) <= 100:
+            raise error("invalid_turn", "Client request id must contain 8 to 100 characters", 422)
+        if not prompt.strip() and not uploads:
+            raise error("invalid_turn", "Add an instruction or at least one attachment", 422)
         try:
-            turn, created = await service.enqueue_turn(session_id, payload.prompt, payload.client_request_id)
+            turn, created = await service.enqueue_turn(session_id, prompt, request_id, uploads)
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
         except RuntimeError as exc:
             raise error("project_busy", str(exc), 409) from exc
+        except ValueError as exc:
+            raise error("invalid_attachment", str(exc), 422) from exc
+        finally:
+            for upload in uploads:
+                await upload.close()
         if created:
             background_tasks.add_task(service.execute_turn, turn.id)
         return {"id": turn.id, "status": turn.status, "response": turn.response,
