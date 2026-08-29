@@ -1,6 +1,7 @@
 import sqlite3
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -100,6 +101,49 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
             database.execute("UPDATE agent_sessions SET title = NULL")
         legacy_sessions = client.get(f"/api/v1/projects/{project_id}/sessions").json()
         assert legacy_sessions[0]["title"] == "hello"
+
+
+def test_deleting_chat_archives_it_and_blocks_access(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+
+        deleted = client.delete(f"/api/v1/sessions/{chat['id']}")
+
+        assert deleted.status_code == 204
+        assert client.get(f"/api/v1/projects/{project['id']}/sessions").json() == []
+        assert client.get(f"/api/v1/sessions/{chat['id']}/messages").status_code == 404
+    with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
+        archived, native_id = database.execute(
+            "SELECT archived, native_thread_id FROM agent_sessions WHERE id = ?", (chat["id"],)
+        ).fetchone()
+    assert archived == 1
+    assert native_id == "fixture-thread"
+
+
+def test_deleting_busy_chat_is_rejected(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
+            database.execute(
+                "INSERT INTO turns (id, session_id, client_request_id, prompt, status) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid4()), chat["id"], "busy-request", "still working", "running"),
+            )
+
+        response = client.delete(f"/api/v1/sessions/{chat['id']}")
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "chat_busy"
+        assert len(client.get(f"/api/v1/projects/{project['id']}/sessions").json()) == 1
 
 
 def test_project_outside_allowed_root_is_rejected(tmp_path: Path):

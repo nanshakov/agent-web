@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -243,6 +243,16 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         return [{"id": row.id, "title": row.title or fallback_titles.get(row.id),
                  "native_thread_id": active.get(row.id).native_thread_id if row.id in active else row.native_thread_id,
                  "source": active.get(row.id).agent if row.id in active else "codex"} for row in rows]
+
+    @app.delete("/api/v1/sessions/{session_id}", status_code=204)
+    async def delete_session(session_id: str):
+        try:
+            await service.delete_session(session_id)
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
+        except RuntimeError as exc:
+            raise error("chat_busy", str(exc), 409) from exc
+        return Response(status_code=204)
 
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def session_messages(session_id: str):

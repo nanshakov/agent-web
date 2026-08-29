@@ -29,6 +29,13 @@ class AgentService:
         self.roots = tuple(root.resolve() for root in roots)
         self._active_projects: set[str] = set()
 
+    @staticmethod
+    async def _visible_session(db, session_id: str) -> AgentSession:
+        session = await db.get(AgentSession, session_id)
+        if session is None or session.archived:
+            raise LookupError("Session not found")
+        return session
+
     def validate_project_path(self, raw_path: str) -> Path:
         path = Path(raw_path).expanduser().resolve()
         if not path.is_dir():
@@ -162,6 +169,19 @@ class AgentService:
             await db.refresh(session)
             return session
 
+    async def delete_session(self, session_id: str) -> None:
+        """Hide a logical chat while preserving its native agent history."""
+        async with self.session_factory() as db:
+            session = await self._visible_session(db, session_id)
+            busy = await db.scalar(select(Turn.id).where(
+                Turn.session_id == session_id, Turn.status.in_(("queued", "running"))
+            ).limit(1))
+            if busy is not None:
+                raise RuntimeError("Wait for the current answer before deleting this chat")
+            session.archived = True
+            db.add(AuditEvent(kind="session.archived", subject_id=session.id))
+            await db.commit()
+
     async def _active_segment(self, db, session_id: str) -> AgentSegment:
         segment = await db.scalar(select(AgentSegment).where(
             AgentSegment.session_id == session_id, AgentSegment.status == "active"
@@ -182,9 +202,7 @@ class AgentService:
         """Create the next native segment. Its context goes with the next turn."""
         history = await self.session_history(session_id)
         async with self.session_factory() as db:
-            session = await db.get(AgentSession, session_id)
-            if session is None:
-                raise LookupError("Session not found")
+            session = await self._visible_session(db, session_id)
             project = await db.get(Project, session.project_id)
             if project is None:
                 raise LookupError("Project not found")
@@ -243,9 +261,7 @@ class AgentService:
     ) -> tuple[int, list[dict[str, str]]]:
         """Persist external messages and retain the native ordering for this request."""
         async with self.session_factory() as db:
-            session = await db.get(AgentSession, session_id)
-            if session is None:
-                raise LookupError("Session not found")
+            session = await self._visible_session(db, session_id)
             segment = await self._active_segment(db, session_id)
             project = await db.get(Project, session.project_id)
         if segment.native_thread_id.startswith("cline:"):
@@ -296,9 +312,7 @@ class AgentService:
             # native app is offline or removed.
             pass
         async with self.session_factory() as db:
-            session = await db.get(AgentSession, session_id)
-            if session is None:
-                raise LookupError("Session not found")
+            session = await self._visible_session(db, session_id)
             stored_turns = list((await db.scalars(
                 select(Turn).where(Turn.session_id == session_id, Turn.status == "completed").order_by(Turn.created_at)
             )).all())
@@ -331,9 +345,7 @@ class AgentService:
 
     async def export_context(self, session_id: str) -> dict[str, object]:
         async with self.session_factory() as db:
-            session = await db.get(AgentSession, session_id)
-            if session is None:
-                raise LookupError("Session not found")
+            session = await self._visible_session(db, session_id)
             project = await db.get(Project, session.project_id)
             segments = list((await db.scalars(select(AgentSegment).where(
                 AgentSegment.session_id == session_id).order_by(AgentSegment.created_at))).all())
@@ -374,9 +386,7 @@ class AgentService:
             existing = await db.scalar(select(Turn).where(Turn.client_request_id == request_id))
             if existing:
                 return existing, False
-            session = await db.get(AgentSession, session_id)
-            if session is None:
-                raise LookupError("Session not found")
+            session = await self._visible_session(db, session_id)
             project = await db.get(Project, session.project_id)
             if project is None:
                 raise LookupError("Project not found")

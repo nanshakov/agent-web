@@ -1,0 +1,25 @@
+.chat-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.chat-list-item button {
+  width: auto;
+}
+
+.chat-list-item .chat-open {
+  text-align: left;
+}
+
+button.danger {
+  border-color: rgb(239 181 142 / 45%);
+  color: var(--danger);
+}
+
+button.danger:hover {
+  border-color: var(--danger);
+  color: #ffd4b6;
+  background: rgb(239 181 142 / 8%);
+}
