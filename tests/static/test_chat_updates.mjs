@@ -61,10 +61,17 @@ test('opening a chat scrolls to the latest message', () => {
 
 test('opening a chat reveals and scrolls to the chat workspace', () => {
   assert.equal(elements.get('#chat').hidden, false);
-  const scroll = scrollIntoViewCalls.at(-1);
+  const scroll = scrollIntoViewCalls.find((call) => call.name === '#chat');
   assert.equal(scroll.name, '#chat');
   assert.equal(scroll.options.behavior, 'smooth');
   assert.equal(scroll.options.block, 'start');
+});
+
+test('opening chat history scrolls the viewport to the latest message', () => {
+  const scroll = scrollIntoViewCalls.at(-1);
+  assert.equal(scroll.name, '#messages');
+  assert.equal(scroll.options.behavior, 'smooth');
+  assert.equal(scroll.options.block, 'end');
 });
 
 test('later consecutive agent messages appear', async () => {
