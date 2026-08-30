@@ -40,12 +40,6 @@ class ProjectAgentSettingsInput(BaseModel):
     approval_policy: str = "auto"
 
 
-class AppSettingsInput(BaseModel):
-    model: str | None = Field(default=None, max_length=120)
-    reasoning: str | None = Field(default=None, max_length=80)
-    custom_instructions: str | None = Field(default=None, max_length=20_000)
-
-
 class SessionSwitchInput(ProjectAgentSettingsInput):
     transfer_context: bool | None = None
 
@@ -168,38 +162,6 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 "usage": await agent_usage(name, item),
             }
         return result
-
-    @app.get("/api/v1/settings")
-    async def app_settings():
-        item = await service.get_app_settings()
-        return {
-            "model": item.model,
-            "reasoning": item.reasoning,
-            "custom_instructions": item.custom_instructions or "",
-        }
-
-    @app.put("/api/v1/settings")
-    async def update_app_settings(payload: AppSettingsInput):
-        try:
-            models = await backends["codex"].models()
-            selected = next((item for item in models if item["id"] == payload.model), None)
-            if payload.model is not None and selected is None:
-                raise ValueError("Selected model is not available for Codex")
-            if payload.reasoning is not None:
-                if selected is None or payload.reasoning not in selected["reasoning_efforts"]:
-                    raise ValueError("Selected reasoning level is not supported by this model")
-            item = await service.update_app_settings(
-                payload.model,
-                payload.reasoning,
-                payload.custom_instructions.strip() if payload.custom_instructions else None,
-            )
-        except ValueError as exc:
-            raise error("invalid_app_settings", str(exc), 422) from exc
-        return {
-            "model": item.model,
-            "reasoning": item.reasoning,
-            "custom_instructions": item.custom_instructions or "",
-        }
 
     @app.post("/api/v1/projects", status_code=201)
     async def add_project(payload: ProjectInput):

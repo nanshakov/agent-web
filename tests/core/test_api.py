@@ -16,7 +16,6 @@ class FakeCodex:
     def __init__(self):
         self.prompts = []
         self.runs = []
-        self.starts = []
         self.started_threads = 0
 
     async def health(self):
@@ -32,7 +31,6 @@ class FakeCodex:
 
     async def start_thread(self, cwd: Path, *, model, sandbox, reasoning=None, approval_policy="auto"):
         self.started_threads += 1
-        self.starts.append({"model": model, "reasoning": reasoning})
         return "fixture-thread"
 
     async def thread_history(self, native_thread_id):
@@ -248,36 +246,6 @@ def test_project_agent_settings_and_codex_status(tmp_path: Path):
     assert saved.json()["sandbox"] == "read_only"
     assert status.json()["models"][0]["id"] == "test-model"
     assert status.json()["usage"]["available"] is False
-
-
-def test_global_codex_defaults_and_custom_instructions_apply_to_new_chat(tmp_path: Path):
-    root = tmp_path / "projects"
-    repo = root / "sample"
-    (repo / ".git").mkdir(parents=True)
-    backend = FakeCodex()
-    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=backend)
-
-    with TestClient(app) as client:
-        saved = client.put("/api/v1/settings", json={
-            "model": "other-model",
-            "reasoning": "high",
-            "custom_instructions": "Use Git and keep tests focused.",
-        })
-        project = client.post(
-            "/api/v1/projects", json={"name": "Sample", "path": str(repo)}
-        ).json()
-        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
-        completed_turn(client, client.post(
-            f"/api/v1/sessions/{chat['id']}/turns",
-            json={"prompt": "Implement it", "client_request_id": "global-settings-turn"},
-        ))
-
-    assert saved.status_code == 200
-    assert backend.starts[-1] == {"model": "other-model", "reasoning": "high"}
-    assert "Use Git and keep tests focused." in backend.prompts[-1]
-    assert backend.prompts[-1].endswith("Current user request:\nImplement it")
-    assert backend.runs[-1]["model"] == "other-model"
-    assert backend.runs[-1]["reasoning"] == "high"
 
 
 def test_agent_list_includes_codex_usage(tmp_path: Path):

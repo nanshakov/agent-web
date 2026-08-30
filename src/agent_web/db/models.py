@@ -28,17 +28,6 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class AppSetting(Base):
-    __tablename__ = "app_settings"
-    id: Mapped[str] = mapped_column(String(40), primary_key=True, default="global")
-    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    reasoning: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    custom_instructions: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
 class AgentSession(Base):
     """A user-visible logical chat, potentially spanning several agents."""
     __tablename__ = "agent_sessions"
@@ -46,7 +35,6 @@ class AgentSession(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     native_thread_id: Mapped[str] = mapped_column(String(255), unique=True)
     title: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    custom_instructions: Mapped[str | None] = mapped_column(Text(), nullable=True)
     archived: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
