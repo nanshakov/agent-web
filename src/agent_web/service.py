@@ -12,7 +12,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from agent_web.attachments import agent_prompt, attachment_directory, load_metadata, store_uploads
 from agent_web.cline import ClineHistory
 from agent_web.codex.base import CodexBackend
-from agent_web.db.models import AgentSegment, AgentSession, AuditEvent, ExternalMessage, Project, Turn
+from agent_web.db.models import (
+    AgentSegment,
+    AgentSession,
+    AppSetting,
+    AuditEvent,
+    ExternalMessage,
+    Project,
+    Turn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +67,26 @@ class AgentService:
     async def list_projects(self) -> list[Project]:
         async with self.session_factory() as db:
             return list((await db.scalars(select(Project).order_by(Project.name))).all())
+
+    async def get_app_settings(self) -> AppSetting:
+        async with self.session_factory() as db:
+            return await db.get(AppSetting, "global") or AppSetting(id="global")
+
+    async def update_app_settings(
+        self, model: str | None, reasoning: str | None, custom_instructions: str | None,
+    ) -> AppSetting:
+        async with self.session_factory() as db:
+            item = await db.get(AppSetting, "global")
+            if item is None:
+                item = AppSetting(id="global")
+                db.add(item)
+            item.model = model
+            item.reasoning = reasoning
+            item.custom_instructions = custom_instructions
+            db.add(AuditEvent(kind="app.settings_updated", subject_id=item.id))
+            await db.commit()
+            await db.refresh(item)
+            return item
 
     async def update_project_agent_settings(
         self, project_id: str, agent: str, model: str | None, reasoning: str | None, sandbox: str,
@@ -157,15 +185,27 @@ class AgentService:
             backend = self.backends.get(project.agent)
             if backend is None:
                 raise ValueError(f"Agent '{project.agent}' is not available")
-            native_id = await backend.start_thread(
-                Path(project.path), model=project.model, sandbox=project.sandbox,
-                reasoning=project.reasoning, approval_policy=project.approval_policy,
+            defaults = await db.get(AppSetting, "global")
+            uses_global_codex_defaults = project.agent == "codex" and project.model is None
+            model = defaults.model if defaults and uses_global_codex_defaults else project.model
+            reasoning = (
+                project.reasoning or defaults.reasoning
+                if defaults and uses_global_codex_defaults
+                else project.reasoning
             )
-            session = AgentSession(project_id=project.id, native_thread_id=native_id)
+            native_id = await backend.start_thread(
+                Path(project.path), model=model, sandbox=project.sandbox,
+                reasoning=reasoning, approval_policy=project.approval_policy,
+            )
+            session = AgentSession(
+                project_id=project.id,
+                native_thread_id=native_id,
+                custom_instructions=defaults.custom_instructions if defaults else None,
+            )
             db.add(session)
             await db.flush()
             db.add(AgentSegment(session_id=session.id, native_thread_id=native_id, agent=project.agent,
-                                model=project.model, reasoning=project.reasoning, sandbox=project.sandbox))
+                                model=model, reasoning=reasoning, sandbox=project.sandbox))
             db.add(AuditEvent(kind="session.created", subject_id=session.id))
             await db.commit()
             await db.refresh(session)
@@ -439,6 +479,15 @@ class AgentService:
             f"--- Previous chat ---\n{transcript}\n--- End previous chat ---\n\nCurrent user request:\n{prompt}"
         )
 
+    @staticmethod
+    def _custom_instruction_prompt(instructions: str, prompt: str) -> str:
+        return (
+            "User instructions for this chat follow. Apply them unless they conflict with the "
+            "current request or higher-priority instructions.\n\n"
+            f"--- User instructions ---\n{instructions}\n--- End user instructions ---\n\n"
+            f"Current user request:\n{prompt}"
+        )
+
     async def enqueue_turn(self, session_id: str, prompt: str, request_id: str,
                            uploads: list[object] | None = None) -> tuple[Turn, bool]:
         async with self.session_factory() as db:
@@ -456,8 +505,15 @@ class AgentService:
             if session.title is None:
                 session.title = chat_title(prompt or (str(attachments[0]["name"]) if attachments else ""))
             submitted = agent_prompt(Path(project.path), prompt, attachments)
+            previous_turn = await db.scalar(
+                select(Turn.id).where(
+                    Turn.segment_id == segment.id, Turn.status == "completed"
+                ).limit(1)
+            )
+            if previous_turn is None and session.custom_instructions:
+                submitted = self._custom_instruction_prompt(session.custom_instructions, submitted)
             turn = Turn(session_id=session.id, segment_id=segment.id, client_request_id=request_id,
-                        prompt=prompt, agent_prompt=submitted if attachments else None,
+                        prompt=prompt, agent_prompt=submitted if submitted != prompt else None,
                         attachments_json=json.dumps(attachments) if attachments else None, status="running")
             turn.agent, turn.model, turn.reasoning, turn.sandbox = (
                 segment.agent, segment.model, segment.reasoning, segment.sandbox
