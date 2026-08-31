@@ -237,19 +237,27 @@ opencode models lm-studio
 uv run agent-web run-tests
 ```
 
-Один раз укажите публичный репозиторий и ветку:
+### Первое подключение обновлений
+
+Один раз укажите публичный репозиторий и ветку из корня проекта.
 
 Windows:
 
 ```powershell
-.\scripts\configure-update.ps1 -RepositoryUrl 'https://github.com/your-account/agent-web.git' -Branch main
+.\scripts\configure-update.ps1 -RepositoryUrl "https://github.com/nanshakov/agent-web.git" -Branch main
+.\scripts\restart-agent-web.ps1
 ```
 
 macOS:
 
 ```bash
-./scripts/configure-update.sh https://github.com/your-account/agent-web.git main
+chmod +x scripts/*.sh
+./scripts/configure-update.sh https://github.com/nanshakov/agent-web.git main
+./scripts/restart-agent-web.sh
 ```
+
+Команда `chmod` нужна только в том случае, если macOS сообщает, что скрипты
+нельзя выполнить. После первой настройки повторять `configure-update` не нужно.
 
 После настройки при каждом запуске Agent Web в фоне выполняет `git fetch` и
 сравнивает текущий commit с указанной веткой. Если появилась новая версия,
