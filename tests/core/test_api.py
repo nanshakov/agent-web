@@ -90,6 +90,14 @@ class LongHistoryCodex(FakeCodex):
         return f"answered: {prompt}"
 
 
+class FailingCodex(FakeCodex):
+    async def thread_history(self, native_thread_id):
+        return []
+
+    async def run_turn(self, native_thread_id, prompt, *, sandbox, model=None, reasoning=None):
+        raise RuntimeError("agent process could not start")
+
+
 def completed_turn(client: TestClient, response):
     assert response.status_code == 200
     turn_id = response.json()["id"]
@@ -125,6 +133,28 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
             database.execute("UPDATE agent_sessions SET title = NULL")
         legacy_sessions = client.get(f"/api/v1/projects/{project_id}/sessions").json()
         assert legacy_sessions[0]["title"] == "hello"
+
+
+def test_failed_turn_remains_in_chat_history(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FailingCodex())
+
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        turn = completed_turn(client, client.post(
+            f"/api/v1/sessions/{chat['id']}/turns",
+            json={"prompt": "Launch agent", "client_request_id": "failed-agent-start"},
+        ))
+        history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+
+    assert turn["status"] == "failed"
+    assert [(message["role"], message["content"]) for message in history] == [
+        ("user", "Launch agent"),
+        ("assistant", turn["response"]),
+    ]
 
 
 def test_turn_accepts_attachments_and_removes_them_with_chat(tmp_path: Path):

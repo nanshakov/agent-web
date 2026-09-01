@@ -340,8 +340,9 @@ class AgentService:
             incoming = await backend.thread_history(segment.native_thread_id)
         incoming = [item for item in incoming if item.get("role") in {"user", "assistant"} and item.get("content")]
         async with self.session_factory() as db:
-            turns = list((await db.scalars(select(Turn).where(Turn.segment_id == segment.id,
-                Turn.status == "completed"))).all())
+            turns = list((await db.scalars(select(Turn).where(
+                Turn.segment_id == segment.id, Turn.status.in_(("completed", "failed"))
+            ))).all())
             external = list((await db.scalars(select(ExternalMessage).where(
                 ExternalMessage.segment_id == segment.id))).all())
             known = {(item["role"], item["content"]) for item in self._turn_messages(turns)}
@@ -377,9 +378,9 @@ class AgentService:
             pass
         async with self.session_factory() as db:
             session = await self._visible_session(db, session_id)
-            stored_turns = list((await db.scalars(
-                select(Turn).where(Turn.session_id == session_id, Turn.status == "completed").order_by(Turn.created_at)
-            )).all())
+            stored_turns = list((await db.scalars(select(Turn).where(
+                Turn.session_id == session_id, Turn.status.in_(("completed", "failed"))
+            ).order_by(Turn.created_at))).all())
             segments = list((await db.scalars(select(AgentSegment).where(
                 AgentSegment.session_id == session_id).order_by(AgentSegment.created_at))).all())
             external = list((await db.scalars(select(ExternalMessage).where(
@@ -413,13 +414,17 @@ class AgentService:
                 current_metadata = metadata
                 for item in live_history:
                     display = {"role": item["role"], "content": item["content"]}
+                    matched_turn = None
                     if item["role"] == "user" and submitted.get(item["content"]):
-                        matched = submitted[item["content"]].pop(0)
-                        display = {"role": "user", "content": matched.prompt,
-                                   "attachments": load_metadata(matched.attachments_json)}
-                        current_metadata = turn_metadata(matched)
-                        unmatched_turns.remove(matched)
+                        matched_turn = submitted[item["content"]].pop(0)
+                        display = {"role": "user", "content": matched_turn.prompt,
+                                   "attachments": load_metadata(matched_turn.attachments_json)}
+                        current_metadata = turn_metadata(matched_turn)
+                        unmatched_turns.remove(matched_turn)
                     messages.append({**display, **current_metadata})
+                    if matched_turn is not None and matched_turn.status == "failed":
+                        messages.append({"role": "assistant", "content": matched_turn.response or "Agent run failed.",
+                                         **current_metadata})
                 for turn in unmatched_turns:
                     messages.extend({**item, **turn_metadata(turn)} for item in self._turn_messages([turn]))
                 continue

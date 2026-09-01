@@ -111,3 +111,24 @@ test('agent usage readout follows the selected agent', () => {
   vm.runInContext("renderAgentUsage('opencode')", context);
   assert.equal(elements.get('#limits').textContent, 'OpenCode · Local LM Studio · no cloud limit');
 });
+
+test('turn start errors remain visible after history refresh', async () => {
+  const form = elements.get('#turn-form');
+  const submitButton = {disabled: false};
+  form.prompt = {value: 'Trigger agent'};
+  form.querySelector = () => submitButton;
+  form.reset = () => {};
+  vm.runInContext(`
+    activeSession='chat-1';
+    applyChatSettings=async()=>{};
+    fileInput.files=[];
+    request=async()=>{throw new Error('Agent failed to start')};
+  `, context);
+
+  await form.onsubmit({preventDefault() {}, target: form});
+  assert.match(messages.innerHTML, /Agent failed to start/);
+
+  vm.runInContext('request=async()=>[]', context);
+  await intervals.at(-1)();
+  assert.match(messages.innerHTML, /Agent failed to start/);
+});
