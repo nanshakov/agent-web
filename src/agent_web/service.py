@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+import re
 import shutil
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import select
@@ -23,6 +27,13 @@ from agent_web.db.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ChatExport:
+    content: bytes
+    filename: str
+    media_type: str
 
 
 def chat_title(prompt: str) -> str:
@@ -462,8 +473,36 @@ class AgentService:
 
     async def export_context_markdown(self, session_id: str) -> str:
         context = await self.export_context(session_id)
+        markdown, _ = self._export_markdown(context)
+        return markdown
+
+    @staticmethod
+    def _attachment_path(project_path: Path, attachment: dict[str, object]) -> Path:
+        root = project_path.resolve()
+        path = (root / str(attachment["path"])).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError("Invalid attachment path")
+        if not path.is_file():
+            raise FileNotFoundError(f"Attachment not found: {attachment['name']}")
+        return path
+
+    @staticmethod
+    def _fenced_text(name: str, content: str) -> str:
+        longest = max((len(item) for item in re.findall(r"`+", content)), default=0)
+        fence = "`" * max(3, longest + 1)
+        language = Path(name).suffix.removeprefix(".").lower()
+        if not language.isalnum():
+            language = "text"
+        return f"### Attachment: `{name}`\n\n{fence}{language}\n{content}\n{fence}\n"
+
+    def _export_markdown(
+        self, context: dict[str, object]
+    ) -> tuple[str, list[tuple[str, Path]]]:
         project = context["project"]
         sections = [f"# {project['name']}\n", f"Project: `{project['path']}`\n"]
+        project_path = Path(str(project["path"]))
+        packaged: list[tuple[str, Path]] = []
+        used_names: set[str] = set()
         for message in context["messages"]:
             label = message["role"].title()
             if message.get("agent"):
@@ -472,8 +511,40 @@ class AgentService:
                     label += f" · {message['model']}"
                 if message.get("reasoning"):
                     label += f" · {message['reasoning']}"
-            sections.append(f"## {label}\n\n{message['content']}\n")
-        return "\n".join(sections)
+            body = str(message["content"])
+            for attachment in message.get("attachments") or []:
+                name = str(attachment["name"])
+                path = self._attachment_path(project_path, attachment)
+                if attachment.get("kind") == "text":
+                    text = path.read_text(encoding="utf-8-sig", errors="replace")
+                    body += f"\n\n{self._fenced_text(name, text)}"
+                    continue
+                candidate = name
+                stem, suffix = Path(name).stem, Path(name).suffix
+                counter = 2
+                while candidate.casefold() in used_names:
+                    candidate = f"{stem}-{counter}{suffix}"
+                    counter += 1
+                used_names.add(candidate.casefold())
+                archive_path = f"attachments/{candidate}"
+                packaged.append((archive_path, path))
+                link = f"![{name}]({archive_path})" if attachment.get("kind") == "image" \
+                    else f"[{name}]({archive_path})"
+                body += f"\n\nAttachment: {link}"
+            sections.append(f"## {label}\n\n{body}\n")
+        return "\n".join(sections), packaged
+
+    async def export_chat(self, session_id: str) -> ChatExport:
+        context = await self.export_context(session_id)
+        markdown, packaged = self._export_markdown(context)
+        if not packaged:
+            return ChatExport(markdown.encode("utf-8"), "chat.md", "text/markdown")
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("chat.md", markdown.encode("utf-8"))
+            for archive_path, path in packaged:
+                archive.write(path, archive_path)
+        return ChatExport(output.getvalue(), "chat.zip", "application/zip")
 
     @staticmethod
     def _handoff_prompt(messages: list[dict[str, str]], prompt: str) -> str:

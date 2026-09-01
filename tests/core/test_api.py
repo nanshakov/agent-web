@@ -1,5 +1,7 @@
+import io
 import sqlite3
 import time
+import zipfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -157,7 +159,7 @@ def test_failed_turn_remains_in_chat_history(tmp_path: Path):
     ]
 
 
-def test_turn_accepts_attachments_and_removes_them_with_chat(tmp_path: Path):
+def test_chat_export_inlines_text_packages_images_and_removes_attachments(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
     (repo / ".git").mkdir(parents=True)
@@ -167,22 +169,39 @@ def test_turn_accepts_attachments_and_removes_them_with_chat(tmp_path: Path):
     with TestClient(app) as client:
         project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
         chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
-        turn = completed_turn(client, client.post(
+        text_turn = completed_turn(client, client.post(
             f"/api/v1/sessions/{chat['id']}/turns",
             data={"prompt": "", "client_request_id": "attachment-request"},
-            files=[
-                ("files", ("notes.txt", b"important attachment text", "text/plain")),
-                ("files", ("diagram.png", b"fake image bytes", "image/png")),
-            ],
+            files=[("files", ("notes.txt", b"important attachment text", "text/plain"))],
         ))
 
-        assert turn["status"] == "completed"
+        assert text_turn["status"] == "completed"
         assert "important attachment text" in backend.prompts[-1]
         assert str(repo / ".agent-web" / "attachments" / chat["id"]) in backend.prompts[-1]
+        markdown_export = client.get(f"/api/v1/sessions/{chat['id']}/export")
+        assert markdown_export.headers["content-type"].startswith("text/markdown")
+        assert 'filename="chat.md"' in markdown_export.headers["content-disposition"]
+        assert "important attachment text" in markdown_export.text
+
+        image_turn = completed_turn(client, client.post(
+            f"/api/v1/sessions/{chat['id']}/turns",
+            data={"prompt": "Inspect image", "client_request_id": "image-attachment-request"},
+            files=[("files", ("diagram.png", b"fake image bytes", "image/png"))],
+        ))
+        assert image_turn["status"] == "completed"
         history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
-        user_message = next(message for message in history if message.get("attachments"))
-        assert user_message["content"] == ""
-        assert [item["name"] for item in user_message["attachments"]] == ["notes.txt", "diagram.png"]
+        attachments = [item for message in history for item in message.get("attachments", [])]
+        assert [item["name"] for item in attachments] == ["notes.txt", "diagram.png"]
+
+        archive_export = client.get(f"/api/v1/sessions/{chat['id']}/export")
+        assert archive_export.headers["content-type"] == "application/zip"
+        assert 'filename="chat.zip"' in archive_export.headers["content-disposition"]
+        with zipfile.ZipFile(io.BytesIO(archive_export.content)) as archive:
+            assert set(archive.namelist()) == {"chat.md", "attachments/diagram.png"}
+            markdown = archive.read("chat.md").decode("utf-8")
+            assert "important attachment text" in markdown
+            assert "![diagram.png](attachments/diagram.png)" in markdown
+            assert archive.read("attachments/diagram.png") == b"fake image bytes"
         attachment_dir = repo / ".agent-web" / "attachments" / chat["id"]
         assert len(list(attachment_dir.iterdir())) == 2
         assert ".agent-web/" in (repo / ".git" / "info" / "exclude").read_text("utf-8")

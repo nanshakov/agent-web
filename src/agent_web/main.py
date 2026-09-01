@@ -343,6 +343,20 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
 
+    @app.get("/api/v1/sessions/{session_id}/export")
+    async def export_session(session_id: str):
+        try:
+            exported = await service.export_chat(session_id)
+            return Response(
+                content=exported.content,
+                media_type=exported.media_type,
+                headers={"Content-Disposition": f'attachment; filename="{exported.filename}"'},
+            )
+        except LookupError as exc:
+            raise error("not_found", str(exc), 404) from exc
+        except (FileNotFoundError, ValueError) as exc:
+            raise error("export_unavailable", str(exc), 409) from exc
+
     @app.post("/api/v1/sessions/{session_id}/turns")
     async def add_turn(session_id: str, request: Request, background_tasks: BackgroundTasks):
         uploads = []

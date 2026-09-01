@@ -1,0 +1,11 @@
+.chat-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-heading-actions button {
+  width: auto;
+  min-height: 30px;
+  padding: 0 10px;
+}
