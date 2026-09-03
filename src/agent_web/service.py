@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import shutil
+import traceback
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,25 +189,29 @@ class AgentService:
                 await db.commit()
         return imported
 
-    async def create_session(self, project_id: str) -> AgentSession:
+    async def create_session(self, project_id: str, *, agent: str | None = None,
+                             model: str | None = None, reasoning: str | None = None,
+                             sandbox: str | None = None, approval_policy: str | None = None) -> AgentSession:
         async with self.session_factory() as db:
             project = await db.get(Project, project_id)
             if project is None:
                 raise LookupError("Project not found")
-            backend = self.backends.get(project.agent)
+            selected_agent = agent or project.agent
+            backend = self.backends.get(selected_agent)
             if backend is None:
-                raise ValueError(f"Agent '{project.agent}' is not available")
+                raise ValueError(f"Agent '{selected_agent}' is not available")
             defaults = await db.get(AppSetting, "global")
-            uses_global_codex_defaults = project.agent == "codex" and project.model is None
-            model = defaults.model if defaults and uses_global_codex_defaults else project.model
-            reasoning = (
-                project.reasoning or defaults.reasoning
-                if defaults and uses_global_codex_defaults
-                else project.reasoning
-            )
+            selected_model = model if agent is not None else project.model
+            selected_reasoning = reasoning if agent is not None else project.reasoning
+            selected_sandbox = sandbox or project.sandbox
+            selected_approval = approval_policy or project.approval_policy
+            uses_global_codex_defaults = selected_agent == "codex" and selected_model is None
+            if defaults and uses_global_codex_defaults:
+                selected_model = defaults.model
+                selected_reasoning = selected_reasoning or defaults.reasoning
             native_id = await backend.start_thread(
-                Path(project.path), model=model, sandbox=project.sandbox,
-                reasoning=reasoning, approval_policy=project.approval_policy,
+                Path(project.path), model=selected_model, sandbox=selected_sandbox,
+                reasoning=selected_reasoning, approval_policy=selected_approval,
             )
             session = AgentSession(
                 project_id=project.id,
@@ -215,8 +220,8 @@ class AgentService:
             )
             db.add(session)
             await db.flush()
-            db.add(AgentSegment(session_id=session.id, native_thread_id=native_id, agent=project.agent,
-                                model=model, reasoning=reasoning, sandbox=project.sandbox))
+            db.add(AgentSegment(session_id=session.id, native_thread_id=native_id, agent=selected_agent,
+                                model=selected_model, reasoning=selected_reasoning, sandbox=selected_sandbox))
             db.add(AuditEvent(kind="session.created", subject_id=session.id))
             await db.commit()
             await db.refresh(session)
@@ -645,7 +650,10 @@ class AgentService:
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)
                 stored.status = "failed"
-                stored.response = "Agent run failed. Check the Agent Web server log and try again."
+                stored.response = (
+                    f"Agent run failed: {type(exc).__name__}: {exc}\n\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
                 await db.commit()
                 return stored
         finally:

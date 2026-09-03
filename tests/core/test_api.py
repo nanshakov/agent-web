@@ -153,6 +153,8 @@ def test_failed_turn_remains_in_chat_history(tmp_path: Path):
         history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
 
     assert turn["status"] == "failed"
+    assert "RuntimeError: agent process could not start" in turn["response"]
+    assert "Traceback:" in turn["response"]
     assert [(message["role"], message["content"]) for message in history] == [
         ("user", "Launch agent"),
         ("assistant", turn["response"]),
@@ -367,6 +369,28 @@ def test_opencode_can_be_selected_per_project(tmp_path: Path):
         session = client.post(f"/api/v1/projects/{project['id']}/sessions")
     assert saved.json()["agent"] == "opencode"
     assert session.json()["native_thread_id"].startswith("opencode:")
+
+
+def test_new_session_accepts_agent_settings_before_creation_and_lists_active_settings(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    codex, opencode = FakeCodex(), FakeOpenCode()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)),
+                     backend={"codex": codex, "opencode": opencode})
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        session = client.post(f"/api/v1/projects/{project['id']}/sessions", json={
+            "agent": "opencode", "model": "test-model", "reasoning": "high",
+            "sandbox": "read_only", "approval_policy": "auto",
+        })
+        listed = client.get(f"/api/v1/projects/{project['id']}/sessions").json()
+    assert session.status_code == 201
+    assert opencode.started_threads == 1
+    assert listed[0]["agent"] == "opencode"
+    assert listed[0]["model"] == "test-model"
+    assert listed[0]["reasoning"] == "high"
+    assert listed[0]["sandbox"] == "read_only"
 
 
 def test_switching_agent_keeps_one_chat_and_hands_off_history(tmp_path: Path):

@@ -237,13 +237,35 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 "sandbox": project.sandbox, "approval_policy": project.approval_policy}
 
     @app.post("/api/v1/projects/{project_id}/sessions", status_code=201)
-    async def add_session(project_id: str):
+    async def add_session(project_id: str, payload: ProjectAgentSettingsInput | None = None):
         try:
-            session = await service.create_session(project_id)
+            if payload is not None:
+                if payload.sandbox not in {"read_only", "workspace_write"}:
+                    raise ValueError("Only read-only or workspace-write access is available")
+                if payload.approval_policy != "auto":
+                    raise ValueError("Only autonomous approval is available in this UI")
+                backend_for_agent = backends.get(payload.agent)
+                if backend_for_agent is None:
+                    raise ValueError("Selected agent is not available")
+                models = await backend_for_agent.models()
+                selected = next((item for item in models if item["id"] == payload.model), None)
+                if payload.model is not None and selected is None:
+                    raise ValueError("Selected model is not available for this agent")
+                if payload.reasoning is not None and (selected is None or
+                                                       payload.reasoning not in selected["reasoning_efforts"]):
+                    raise ValueError("Selected reasoning level is not supported by this model")
+            session = await service.create_session(
+                project_id,
+                **({"agent": payload.agent, "model": payload.model, "reasoning": payload.reasoning,
+                    "sandbox": payload.sandbox, "approval_policy": payload.approval_policy}
+                   if payload is not None else {}),
+            )
         except LookupError as exc:
             raise error("not_found", str(exc), 404) from exc
+        except ValueError as exc:
+            raise error("invalid_agent_settings", str(exc), 422) from exc
         except Exception as exc:
-            raise error("codex_unavailable", str(exc), 503) from exc
+            raise error("agent_unavailable", str(exc), 503) from exc
         return {"id": session.id, "native_thread_id": session.native_thread_id}
 
     @app.post("/api/v1/sessions/{session_id}/switch", status_code=201)
@@ -297,7 +319,11 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                     fallback_titles.setdefault(turn.session_id, chat_title(turn.prompt))
         return [{"id": row.id, "title": row.title or fallback_titles.get(row.id),
                  "native_thread_id": active.get(row.id).native_thread_id if row.id in active else row.native_thread_id,
-                 "source": active.get(row.id).agent if row.id in active else "codex"} for row in rows]
+                 "source": active.get(row.id).agent if row.id in active else "codex",
+                 "agent": active.get(row.id).agent if row.id in active else "codex",
+                 "model": active.get(row.id).model if row.id in active else None,
+                 "reasoning": active.get(row.id).reasoning if row.id in active else None,
+                 "sandbox": active.get(row.id).sandbox if row.id in active else "workspace_write"} for row in rows]
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_session(session_id: str):
