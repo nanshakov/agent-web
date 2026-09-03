@@ -1,7 +1,9 @@
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 from agent_web.opencode_acp import OpenCodeAcpBackend
+from agent_web.opencode_acp import _OpenCodeClient
 
 
 class RecordingOpenCode(OpenCodeAcpBackend):
@@ -54,3 +56,33 @@ async def test_opencode_models_and_lm_studio_launch_use_current_config():
         "lms", "load", "local-model", "--identifier", "local-model",
         "--context-length", "45056", "--yes",
     ) in backend.commands
+
+
+async def test_opencode_text_chunks_are_aggregated_by_role():
+    client = _OpenCodeClient()
+    session_id = "session"
+
+    for text in ("README", ".", " docs"):
+        await client.session_update(
+            session_id,
+            SimpleNamespace(
+                session_update="agent_message_chunk",
+                content=SimpleNamespace(type="text", text=text),
+            ),
+        )
+    await client.session_update(
+        session_id,
+        SimpleNamespace(session_update="tool_call", content=SimpleNamespace(type="tool")),
+    )
+    await client.session_update(
+        session_id,
+        SimpleNamespace(
+            session_update="agent_message_chunk",
+            content=SimpleNamespace(type="text", text="final"),
+        ),
+    )
+
+    assert client.messages[session_id] == [
+        {"role": "assistant", "content": "README. docs"},
+        {"role": "assistant", "content": "final"},
+    ]

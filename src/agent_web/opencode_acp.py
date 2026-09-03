@@ -38,13 +38,22 @@ def _permissions(sandbox: str) -> str:
 class _OpenCodeClient:
     def __init__(self) -> None:
         self.messages: dict[str, list[dict[str, str]]] = {}
+        self._last_text_role: dict[str, str | None] = {}
 
     async def session_update(self, session_id: str, update: Any, **_: Any) -> None:
         content = getattr(update, "content", None)
         if getattr(content, "type", None) != "text":
+            # A non-text ACP update (for example a tool call) separates text
+            # messages even when the following text has the same role.
+            self._last_text_role[session_id] = None
             return
         role = "assistant" if update.session_update == "agent_message_chunk" else "user"
-        self.messages.setdefault(session_id, []).append({"role": role, "content": content.text})
+        messages = self.messages.setdefault(session_id, [])
+        if self._last_text_role.get(session_id) == role and messages:
+            messages[-1]["content"] += content.text
+        else:
+            messages.append({"role": role, "content": content.text})
+        self._last_text_role[session_id] = role
 
     async def request_permission(self, session_id: str, tool_call: Any, options: list[Any], **_: Any):
         # The process receives explicit deny rules for external paths and read-only
