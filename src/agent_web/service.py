@@ -10,6 +10,7 @@ import traceback
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import AsyncIterator, NotRequired, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -39,6 +40,15 @@ class ChatExport:
     media_type: str
 
 
+class TurnEvent(TypedDict):
+    type: str
+    turn_id: str
+    session_id: str
+    status: str
+    content: str
+    delta: NotRequired[str]
+
+
 def chat_title(prompt: str) -> str:
     compact_prompt = " ".join(prompt.split()) or "Untitled chat"
     return compact_prompt[:297] + "..." if len(compact_prompt) > 300 else compact_prompt
@@ -54,6 +64,31 @@ class AgentService:
         self.backends = backends if isinstance(backends, dict) else {"codex": backends}
         self.roots = tuple(root.resolve() for root in roots)
         self._active_projects: set[str] = set()
+        self._turn_streams: dict[str, TurnEvent] = {}
+        self._stream_subscribers: dict[str, set[asyncio.Queue[TurnEvent]]] = {}
+
+    async def subscribe_turn_events(self, session_id: str) -> AsyncIterator[TurnEvent]:
+        """Yield an in-process replayable stream of updates for one chat session."""
+        async with self.session_factory() as db:
+            await self._visible_session(db, session_id)
+        queue: asyncio.Queue[TurnEvent] = asyncio.Queue()
+        subscribers = self._stream_subscribers.setdefault(session_id, set())
+        subscribers.add(queue)
+        try:
+            for event in self._turn_streams.values():
+                if event["session_id"] == session_id:
+                    yield event.copy()
+            while True:
+                yield await queue.get()
+        finally:
+            subscribers.discard(queue)
+            if not subscribers:
+                self._stream_subscribers.pop(session_id, None)
+
+    def _publish_turn_event(self, event: TurnEvent) -> None:
+        self._turn_streams[event["turn_id"]] = event
+        for queue in self._stream_subscribers.get(event["session_id"], set()):
+            queue.put_nowait(event.copy())
 
     @staticmethod
     def _timestamp(value) -> str | None:
@@ -666,6 +701,10 @@ class AgentService:
             turn.id, session.id, segment.id, segment.agent,
         )
         self._active_projects.add(project.id)
+        self._publish_turn_event({
+            "type": "turn.started", "turn_id": turn.id, "session_id": turn.session_id,
+            "status": "running", "content": "",
+        })
         return turn, True
 
     async def execute_turn(self, turn_id: str) -> Turn:
@@ -705,13 +744,33 @@ class AgentService:
             if segment.handoff_pending:
                 earlier = json.loads(segment.handoff_context or "[]")
                 submitted_prompt = self._handoff_prompt(earlier, submitted_prompt)
-            for attempt in range(1, self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS + 1):
-                try:
-                    response = await backend.run_turn(
+            content = ""
+
+            async def on_delta(delta: str) -> None:
+                nonlocal content
+                content += delta
+                self._publish_turn_event({
+                    "type": "turn.delta", "turn_id": turn.id, "session_id": turn.session_id,
+                    "status": "running", "content": content, "delta": delta,
+                })
+
+            async def run_backend_turn() -> str:
+                stream_turn = getattr(backend, "stream_turn", None)
+                if stream_turn is not None and backend.capabilities.streaming:
+                    return await stream_turn(
                         segment.native_thread_id, submitted_prompt,
                         sandbox=turn.sandbox or segment.sandbox,
-                        model=turn.model, reasoning=turn.reasoning,
+                        model=turn.model, reasoning=turn.reasoning, on_delta=on_delta,
                     )
+                return await backend.run_turn(
+                    segment.native_thread_id, submitted_prompt,
+                    sandbox=turn.sandbox or segment.sandbox,
+                    model=turn.model, reasoning=turn.reasoning,
+                )
+
+            for attempt in range(1, self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS + 1):
+                try:
+                    response = await run_backend_turn()
                     break
                 except Exception as exc:
                     if not self._is_active_writer_conflict(exc):
@@ -745,6 +804,10 @@ class AgentService:
                     "turn_trace event=completed turn_id=%s session_id=%s segment_id=%s agent=%s",
                     turn.id, session.id, segment.id, segment.agent,
                 )
+                self._publish_turn_event({
+                    "type": "turn.completed", "turn_id": turn.id, "session_id": turn.session_id,
+                    "status": "completed", "content": response,
+                })
                 return stored
         except Exception as exc:
             logger.exception(
@@ -766,6 +829,10 @@ class AgentService:
                     }, separators=(",", ":")),
                 ))
                 await db.commit()
+                self._publish_turn_event({
+                    "type": "turn.failed", "turn_id": turn.id, "session_id": turn.session_id,
+                    "status": "failed", "content": stored.response,
+                })
                 return stored
         finally:
             self._active_projects.discard(project.id)

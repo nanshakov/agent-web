@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 from logging.handlers import RotatingFileHandler
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -494,5 +494,19 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             raise error("not_found", str(exc), 404) from exc
         return {"id": turn.id, "status": turn.status, "response": turn.response,
                 "rendered_response": render_markdown(turn.response)}
+
+    @app.websocket("/api/v1/ws/sessions/{session_id}")
+    async def session_turn_events(websocket: WebSocket, session_id: str):
+        await websocket.accept()
+        try:
+            async for event in service.subscribe_turn_events(session_id):
+                payload = dict(event)
+                if payload["type"] in {"turn.completed", "turn.failed"}:
+                    payload["rendered_content"] = render_markdown(str(payload["content"]))
+                await websocket.send_json(payload)
+        except LookupError:
+            await websocket.close(code=1008)
+        except WebSocketDisconnect:
+            pass
 
     return app

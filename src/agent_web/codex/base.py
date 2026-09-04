@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,12 @@ class CodexBackend(Protocol):
     async def run_turn(
         self, native_thread_id: str, prompt: str, *, sandbox: str,
         model: str | None = None, reasoning: str | None = None,
+    ) -> str: ...
+
+    async def stream_turn(
+        self, native_thread_id: str, prompt: str, *, sandbox: str,
+        on_delta: Callable[[str], Awaitable[None]], model: str | None = None,
+        reasoning: str | None = None,
     ) -> str: ...
 
     async def interrupt(self, native_thread_id: str) -> bool: ...

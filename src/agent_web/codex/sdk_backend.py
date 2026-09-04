@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from agent_web.codex.base import Capabilities
 
@@ -14,8 +15,8 @@ class SdkCodexBackend:
 
     def __init__(self) -> None:
         self._codex = None
-        self._threads: dict[str, object] = {}
-        self._capabilities = Capabilities(streaming=False, steer=False, interrupt=False)
+        self._threads: dict[str, Any] = {}
+        self._capabilities = Capabilities(streaming=True, steer=False, interrupt=False)
 
     @property
     def capabilities(self) -> Capabilities:
@@ -157,6 +158,49 @@ class SdkCodexBackend:
             effort=ReasoningEffort(reasoning) if reasoning else None,
         )
         return result.final_response
+
+    async def stream_turn(
+        self, native_thread_id: str, prompt: str, *, sandbox: str,
+        on_delta: Callable[[str], Awaitable[None]], model: str | None = None,
+        reasoning: str | None = None,
+    ) -> str:
+        """Forward Codex agent-message deltas while collecting the final response."""
+        from openai_codex import Sandbox  # type: ignore[import-not-found]
+        from openai_codex.generated.v2_all import (  # type: ignore[import-not-found]
+            AgentMessageDeltaNotification,
+            AgentMessageThreadItem,
+            ItemCompletedNotification,
+            MessagePhase,
+            ReasoningEffort,
+            TurnCompletedNotification,
+            TurnStatus,
+        )
+
+        thread = self._threads.get(native_thread_id)
+        if thread is None:
+            thread = await (await self._client()).thread_resume(native_thread_id)
+            self._threads[native_thread_id] = thread
+        handle = await thread.turn(
+            prompt, sandbox=getattr(Sandbox, sandbox), model=model,
+            effort=ReasoningEffort(reasoning) if reasoning else None,
+        )
+        final_response: str | None = None
+        fallback_response: str | None = None
+        async for event in handle.stream():
+            payload = event.payload
+            if isinstance(payload, AgentMessageDeltaNotification):
+                await on_delta(payload.delta)
+            elif isinstance(payload, ItemCompletedNotification):
+                item = payload.item.root if hasattr(payload.item, "root") else payload.item
+                if isinstance(item, AgentMessageThreadItem):
+                    fallback_response = item.text
+                    if item.phase == MessagePhase.final_answer:
+                        final_response = item.text
+            elif isinstance(payload, TurnCompletedNotification) and payload.turn.id == handle.id:
+                if payload.turn.status == TurnStatus.failed:
+                    message = payload.turn.error.message if payload.turn.error else "turn failed"
+                    raise RuntimeError(message)
+        return final_response or fallback_response or ""
 
     async def interrupt(self, native_thread_id: str) -> bool:
         thread = self._threads.get(native_thread_id)

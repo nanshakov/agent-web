@@ -90,24 +90,16 @@ test('opening chat history scrolls the viewport to the latest message', () => {
   assert.equal(scroll.options.block, 'end');
 });
 
-test('later consecutive agent messages appear', async () => {
-  assert.ok(intervals.length > 0, 'an open chat must schedule history refreshes');
-  await intervals.at(-1)();
-  assert.match(messages.innerHTML, /First[\s\S]*Second/);
+test('chat script does not schedule polling', () => {
+  assert.doesNotMatch(source, /waitForTurn|\/turns\//);
 });
 
-test('agent messages appear while the submitted turn is still marked running', async () => {
-  messages.innerHTML = '<div class="message">Agent is working...</div>';
-  vm.runInContext(`
-    turnRunning=true;
-    request=async(path)=>path.includes('/messages')
-      ? [{role:'assistant',content:'Live reply',rendered_content:'<p>Live reply</p>'}]
-      : [];
-  `, context);
+test('agent messages stream while the submitted turn is still marked running', () => {
+  const streamed = element('streamed');
+  elements.set('[data-stream-turn="live"]', streamed);
+  vm.runInContext("turnRunning=true;handleTurnEvent({type:'turn.delta',turn_id:'live',content:'Live reply'})", context);
 
-  await intervals.at(-1)();
-
-  assert.match(messages.innerHTML, /Live reply/);
+  assert.equal(streamed.textContent, 'Live reply');
   vm.runInContext('turnRunning=false', context);
 });
 
@@ -188,7 +180,5 @@ test('turn start errors remain visible after history refresh', async () => {
   await form.onsubmit({preventDefault() {}, target: form});
   assert.match(messages.innerHTML, /Agent failed to start/);
 
-  vm.runInContext('request=async()=>[]', context);
-  await intervals.at(-1)();
   assert.match(messages.innerHTML, /Agent failed to start/);
 });

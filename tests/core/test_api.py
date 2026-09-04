@@ -269,6 +269,28 @@ def test_turn_retries_when_native_codex_thread_has_an_active_writer(tmp_path: Pa
     assert backend.attempts == 2
 
 
+def test_session_websocket_replays_turn_state(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        app.state.service._publish_turn_event({
+            "type": "turn.completed", "turn_id": "turn-1", "session_id": chat["id"],
+            "status": "completed", "content": "streamed answer",
+        })
+        with client.websocket_connect(f"/api/v1/ws/sessions/{chat['id']}") as websocket:
+            event = websocket.receive_json()
+
+    assert event == {
+        "type": "turn.completed", "turn_id": "turn-1", "session_id": chat["id"],
+        "status": "completed", "content": "streamed answer",
+        "rendered_content": "<p>streamed answer</p>\n",
+    }
+
+
 def test_chat_export_inlines_text_packages_images_and_removes_attachments(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
