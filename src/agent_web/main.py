@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -20,6 +22,23 @@ from agent_web.db.database import create_database, migrate_database
 from agent_web.markdown import render_markdown
 from agent_web.service import AgentService, chat_title
 from agent_web.updater import UpdateError, Updater
+
+
+logger = logging.getLogger(__name__)
+
+
+async def periodically_import(
+    discover: Callable[[], Awaitable[None]], *, interval: float = 300,
+    sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+) -> None:
+    """Import Codex threads now and repeat until the application stops."""
+    while True:
+        try:
+            await discover()
+        except Exception:
+            # Discovery is optional: retry after a temporary Codex outage.
+            logger.exception("Codex thread discovery failed")
+        await sleep(interval)
 
 
 class ProjectInput(BaseModel):
@@ -69,9 +88,8 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         await service.recover_interrupted_turns()
         app.state.update_status = {"state": "not_configured"}
 
-        async def import_existing_sessions() -> None:
+        async def import_cline_sessions() -> None:
             try:
-                await service.import_existing_codex_sessions()
                 await service.import_cline_sessions(ClineHistory())
             except Exception:
                 # Discovery is a convenience; diagnostics remain available if Codex is offline.
@@ -94,11 +112,14 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             except Exception:
                 app.state.update_status = {"state": "error", "message": "Could not check for updates"}
 
-        import_task = asyncio.create_task(import_existing_sessions())
+        import_task = asyncio.create_task(periodically_import(service.import_existing_codex_sessions))
+        cline_import_task = asyncio.create_task(import_cline_sessions())
         update_task = asyncio.create_task(check_updates())
         yield
         import_task.cancel()
+        cline_import_task.cancel()
         update_task.cancel()
+        await asyncio.gather(import_task, cline_import_task, update_task, return_exceptions=True)
         await engine.dispose()
 
     app = FastAPI(title="Agent Web", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
