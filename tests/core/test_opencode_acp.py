@@ -61,6 +61,12 @@ async def test_opencode_models_and_lm_studio_launch_use_current_config():
 async def test_opencode_text_chunks_are_aggregated_by_role():
     client = _OpenCodeClient()
     session_id = "session"
+    deltas = []
+
+    async def on_delta(text):
+        deltas.append(text)
+
+    client.set_stream_callback(session_id, on_delta)
 
     for text in ("README", ".", " docs"):
         await client.session_update(
@@ -86,3 +92,4 @@ async def test_opencode_text_chunks_are_aggregated_by_role():
         {"role": "assistant", "content": "README. docs"},
         {"role": "assistant", "content": "final"},
     ]
+    assert deltas == ["README", ".", " docs", "final"]

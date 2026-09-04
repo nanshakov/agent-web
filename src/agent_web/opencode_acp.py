@@ -8,7 +8,7 @@ import sys
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import acp
 from acp.schema import (
@@ -39,6 +39,7 @@ class _OpenCodeClient:
     def __init__(self) -> None:
         self.messages: dict[str, list[dict[str, str]]] = {}
         self._last_text_role: dict[str, str | None] = {}
+        self._stream_callbacks: dict[str, Callable[[str], Awaitable[None]]] = {}
 
     async def session_update(self, session_id: str, update: Any, **_: Any) -> None:
         content = getattr(update, "content", None)
@@ -54,6 +55,17 @@ class _OpenCodeClient:
         else:
             messages.append({"role": role, "content": content.text})
         self._last_text_role[session_id] = role
+        callback = self._stream_callbacks.get(session_id)
+        if role == "assistant" and callback is not None:
+            await callback(content.text)
+
+    def set_stream_callback(
+        self, session_id: str, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
+        self._stream_callbacks[session_id] = callback
+
+    def clear_stream_callback(self, session_id: str) -> None:
+        self._stream_callbacks.pop(session_id, None)
 
     async def request_permission(self, session_id: str, tool_call: Any, options: list[Any], **_: Any):
         # The process receives explicit deny rules for external paths and read-only
@@ -84,7 +96,7 @@ class OpenCodeAcpBackend:
         self.lms_command = lms_command or LMS_COMMAND
         self._sessions: dict[str, _Session] = {}
         self._known_cwds: dict[str, Path] = {}
-        self._capabilities = Capabilities(streaming=False, steer=False, interrupt=True)
+        self._capabilities = Capabilities(streaming=True, steer=False, interrupt=True)
 
     @property
     def capabilities(self) -> Capabilities:
@@ -290,6 +302,30 @@ class OpenCodeAcpBackend:
             session.model = selected
         before = len(session.client.messages.get(raw_id, []))
         await session.connection.prompt(session_id=raw_id, prompt=[acp.text_block(prompt)])
+        updates = session.client.messages.get(raw_id, [])[before:]
+        answer = "".join(item["content"] for item in updates if item["role"] == "assistant")
+        return answer or "OpenCode completed the turn without a text response."
+
+    async def stream_turn(
+        self, native_thread_id: str, prompt: str, *, sandbox: str,
+        on_delta: Callable[[str], Awaitable[None]], model: str | None = None,
+        reasoning: str | None = None,
+    ) -> str:
+        del reasoning
+        selected = await self._ensure_model_ready(model)
+        session = await self._session(native_thread_id, sandbox)
+        raw_id = native_thread_id.removeprefix("opencode:")
+        if session.model != selected:
+            await session.connection.set_config_option(
+                session_id=raw_id, config_id="model", value=selected
+            )
+            session.model = selected
+        before = len(session.client.messages.get(raw_id, []))
+        session.client.set_stream_callback(raw_id, on_delta)
+        try:
+            await session.connection.prompt(session_id=raw_id, prompt=[acp.text_block(prompt)])
+        finally:
+            session.client.clear_stream_callback(raw_id)
         updates = session.client.messages.get(raw_id, [])[before:]
         answer = "".join(item["content"] for item in updates if item["role"] == "assistant")
         return answer or "OpenCode completed the turn without a text response."
