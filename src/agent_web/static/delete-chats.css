@@ -2,24 +2,11 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  margin: 8px 0;
+  max-width: 760px;
+  margin: 0 auto 8px;
 }
 
-.chat-list-item button {
-  width: auto;
-}
-
-.chat-list-item .chat-open {
-  text-align: left;
-}
-
-button.danger {
-  border-color: rgb(239 181 142 / 45%);
-  color: var(--danger);
-}
-
-button.danger:hover {
-  border-color: var(--danger);
-  color: #ffd4b6;
-  background: rgb(239 181 142 / 8%);
-}
+.chat-list-item button { width: auto; }
+.chat-list-item .chat-open { overflow: hidden; text-align: left; text-overflow: ellipsis; }
+button.danger { border-color: #efc6c2; background: var(--surface); color: var(--danger); }
+button.danger:hover { border-color: #dca8a2; background: var(--danger-soft); color: #8f1e15; }

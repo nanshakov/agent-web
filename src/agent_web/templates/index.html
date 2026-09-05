@@ -3,26 +3,94 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
     <title>Agent Web</title>
-    <link rel="stylesheet" href="/static/app.css?v=console-redesign">
-    <link rel="stylesheet" href="/static/settings.css?v=global-personalization">
-    <link rel="stylesheet" href="/static/delete-chats.css?v=delete-chats">
-    <link rel="stylesheet" href="/static/markdown.css?v=markdown-rendering">
-    <link rel="stylesheet" href="/static/attachments.css?v=file-attachments">
+    <link rel="stylesheet" href="/static/app.css?v=light-chat-redesign">
+    <link rel="stylesheet" href="/static/settings.css?v=light-chat-redesign">
+    <link rel="stylesheet" href="/static/delete-chats.css?v=light-chat-redesign">
+    <link rel="stylesheet" href="/static/markdown.css?v=light-chat-redesign">
+    <link rel="stylesheet" href="/static/attachments.css?v=light-chat-redesign">
     <link rel="stylesheet" href="/static/chat-export.css?v=chat-export">
   </head>
   <body>
-    <main class="console-shell">
-      <header class="topbar">
-        <div class="brand-lockup"><span class="brand-mark">AW</span><div><span class="eyebrow">AGENT WEB / LOCAL CONTROL PLANE</span><h1>Agent Console</h1></div></div>
-        <div class="runtime-readout"><span class="signal" aria-hidden="true"></span><span id="health">Checking agents…</span><span id="limits"></span><span id="update"></span></div>
-      </header>
-      {% if lan_mode %}<aside class="lan-alert"><strong>LAN mode</strong><span>Anyone on this network can control configured projects.</span></aside>{% endif %}
-      <section class="personalization"><div class="section-heading"><span class="section-kicker">DEFAULTS</span><h2>Personalization</h2></div><form id="settings-form" class="personalization-form"><label>Default model<select name="model"></select></label><label>Default reasoning<select name="reasoning"></select></label><button>Save settings</button><label class="instructions-field">Custom instructions<textarea name="custom_instructions" maxlength="20000" placeholder="Используй Git: создавай отдельную ветку для каждой задачи, коммить изменения и отправляй их на сервер. Не пиши лишних тестов."></textarea></label><p class="setting-note">Instructions apply to new chats. Project model and reasoning overrides take precedence.</p></form></section>
-      <section class="project-index"><div class="section-heading"><span class="section-kicker">01 / WORKSPACES</span><h2>Projects</h2></div><div id="projects" aria-live="polite"></div></section>
-      <section class="project-create"><div class="section-heading"><span class="section-kicker">02 / REGISTER</span><h2>Add a project folder</h2></div><form id="project-form"><label>Name<input name="name" placeholder="e.g. API migration" required></label><label>Folder path<input name="path" placeholder="C:\dev\project" required></label><button>Add project</button></form></section>
-      <section id="chat" class="chat-workspace" hidden><div class="chat-heading"><div><span class="section-kicker">03 / ACTIVE THREAD</span><h2 id="session-title">New session</h2></div><div class="chat-heading-actions"><button class="secondary" type="button" id="export-chat" hidden>Export</button><span class="thread-state">LIVE</span></div></div><div id="messages" aria-live="polite"></div><form id="turn-form" class="composer"><label>Instruction<textarea name="prompt" placeholder="Describe the next task for your agent…"></textarea></label><button>Run turn</button><label class="attachment-picker"><span>Attach files</span><input name="files" type="file" multiple accept="text/*,image/*,.json,.csv,.py,.js,.ts,.tsx,.jsx,.yaml,.yml,.toml,.xml,.sql"></label><div id="selected-files" aria-live="polite"></div><div id="chat-settings" style="grid-column:1/-1"></div></form></section>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <header class="topbar">
+          <div class="brand-lockup">
+            <span class="brand-mark" aria-hidden="true">A</span>
+            <div>
+              <h1>Agent Web</h1>
+              <p>Local AI workspace</p>
+            </div>
+          </div>
+          <div class="runtime-readout">
+            <span class="status-line"><span class="signal" aria-hidden="true"></span><span id="health">Checking agents...</span></span>
+            <span id="limits"></span>
+            <span id="update"></span>
+          </div>
+        </header>
+
+        {% if lan_mode %}<aside class="lan-alert"><strong>LAN mode</strong><span>Anyone on this network can control configured projects.</span></aside>{% endif %}
+
+        <section class="project-index">
+          <div class="section-heading"><h2>Projects</h2></div>
+          <div id="projects" aria-live="polite"></div>
+        </section>
+
+        <details class="project-create sidebar-panel">
+          <summary>Add project</summary>
+          <form id="project-form">
+            <label>Name<input name="name" placeholder="API migration" required></label>
+            <label>Folder path<input name="path" placeholder="C:\dev\project" required></label>
+            <button>Add project</button>
+          </form>
+        </details>
+
+        <details class="personalization sidebar-panel">
+          <summary>Personalization</summary>
+          <form id="settings-form" class="personalization-form">
+            <label>Default model<select name="model"></select></label>
+            <label>Default reasoning<select name="reasoning"></select></label>
+            <label class="instructions-field">Custom instructions<textarea name="custom_instructions" maxlength="20000" placeholder="Add instructions for new chats"></textarea></label>
+            <p class="setting-note">Project settings take precedence.</p>
+            <button>Save settings</button>
+          </form>
+        </details>
+      </aside>
+
+      <section class="workspace-main">
+        <section id="welcome" class="welcome-state">
+          <span class="welcome-mark" aria-hidden="true">A</span>
+          <h2>How can I help?</h2>
+          <p>Choose a project and start a new chat, or open an existing conversation.</p>
+        </section>
+
+        <section id="chat" class="chat-workspace" hidden>
+          <div class="chat-heading">
+            <div>
+              <p class="chat-context">Conversation</p>
+              <h2 id="session-title">New session</h2>
+            </div>
+            <div class="chat-heading-actions">
+              <span class="thread-state"><span class="signal" aria-hidden="true"></span>Active</span>
+              <button class="secondary" type="button" id="export-chat" hidden>Export</button>
+            </div>
+          </div>
+          <div id="messages" aria-live="polite"></div>
+          <form id="turn-form" class="composer">
+            <div class="composer-box">
+              <label class="prompt-field"><span class="sr-only">Message</span><textarea name="prompt" placeholder="Message your agent"></textarea></label>
+              <div class="composer-actions">
+                <label class="attachment-picker"><span>Attach</span><input name="files" type="file" multiple accept="text/*,image/*,.json,.csv,.py,.js,.ts,.tsx,.jsx,.yaml,.yml,.toml,.xml,.sql"></label>
+                <button>Send</button>
+              </div>
+              <div id="selected-files" aria-live="polite"></div>
+            </div>
+            <div id="chat-settings"></div>
+          </form>
+        </section>
+      </section>
     </main>
-    <script src="/static/app.js?v=chat-export-opencode-models"></script>
+    <script src="/static/app.js?v=light-chat-redesign"></script>
   </body>
 </html>
