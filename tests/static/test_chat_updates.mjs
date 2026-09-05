@@ -84,6 +84,17 @@ test('later consecutive agent messages appear', async () => {
   assert.match(messages.innerHTML, /First[\s\S]*Second/);
 });
 
+test('project list periodically refreshes discovered chats', async () => {
+  vm.runInContext(`
+    projectRefreshes=0;
+    request=async(path)=>path==='/projects'?[{id:'project-2'}]:[];
+    renderProjects=projects=>{projectRefreshes=projects.length};
+  `, context);
+
+  await intervals[0]();
+  assert.equal(vm.runInContext('projectRefreshes', context), 1);
+});
+
 test('context consent is requested only when changing agents', async () => {
   context.switchRequests = switchRequests;
   vm.runInContext(`
