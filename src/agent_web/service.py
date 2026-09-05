@@ -44,6 +44,8 @@ def chat_title(prompt: str) -> str:
 
 class AgentService:
     MAX_HANDOFF_CHARS = 120_000
+    NATIVE_THREAD_BUSY_RETRY_DELAY_SECONDS = 1.0
+    NATIVE_THREAD_BUSY_RETRY_ATTEMPTS = 300
     def __init__(self, session_factory: async_sessionmaker, backends: dict[str, CodexBackend] | CodexBackend,
                  roots: tuple[Path, ...]):
         self.session_factory = session_factory
@@ -634,10 +636,27 @@ class AgentService:
             if segment.handoff_pending:
                 earlier = json.loads(segment.handoff_context or "[]")
                 submitted_prompt = self._handoff_prompt(earlier, submitted_prompt)
-            response = await backend.run_turn(
-                segment.native_thread_id, submitted_prompt, sandbox=turn.sandbox or segment.sandbox,
-                model=turn.model, reasoning=turn.reasoning,
-            )
+            for attempt in range(1, self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS + 1):
+                try:
+                    response = await backend.run_turn(
+                        segment.native_thread_id, submitted_prompt,
+                        sandbox=turn.sandbox or segment.sandbox,
+                        model=turn.model, reasoning=turn.reasoning,
+                    )
+                    break
+                except Exception as exc:
+                    if not self._is_active_writer_conflict(exc):
+                        raise
+                    if attempt == self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS:
+                        raise RuntimeError(
+                            "Codex Desktop kept this chat busy for five minutes; try again after it finishes."
+                        ) from exc
+                    logger.info(
+                        "Native Codex thread %s is busy; retrying turn %s (%s/%s)",
+                        segment.native_thread_id, turn.id, attempt,
+                        self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS,
+                    )
+                    await asyncio.sleep(self.NATIVE_THREAD_BUSY_RETRY_DELAY_SECONDS)
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)
                 stored.response, stored.status = response, "completed"
@@ -661,6 +680,11 @@ class AgentService:
                 return stored
         finally:
             self._active_projects.discard(project.id)
+
+    @staticmethod
+    def _is_active_writer_conflict(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "json-rpc error -32600" in message and "already has an active writer" in message
 
     async def create_turn(self, session_id: str, prompt: str, request_id: str) -> Turn:
         turn, created = await self.enqueue_turn(session_id, prompt, request_id)

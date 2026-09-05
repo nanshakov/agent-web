@@ -100,6 +100,22 @@ class FailingCodex(FakeCodex):
         raise RuntimeError("agent process could not start")
 
 
+class BusyThenReadyCodex(FakeCodex):
+    def __init__(self):
+        super().__init__()
+        self.attempts = 0
+
+    async def run_turn(self, native_thread_id, prompt, *, sandbox, model=None, reasoning=None):
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError(
+                "JSON-RPC error -32600: thread fixture-thread already has an active writer"
+            )
+        return await super().run_turn(
+            native_thread_id, prompt, sandbox=sandbox, model=model, reasoning=reasoning
+        )
+
+
 def completed_turn(client: TestClient, response):
     assert response.status_code == 200
     turn_id = response.json()["id"]
@@ -159,6 +175,25 @@ def test_failed_turn_remains_in_chat_history(tmp_path: Path):
         ("user", "Launch agent"),
         ("assistant", turn["response"]),
     ]
+
+
+def test_turn_retries_when_native_codex_thread_has_an_active_writer(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    backend = BusyThenReadyCodex()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=backend)
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        session = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        turn = completed_turn(client, client.post(
+            f"/api/v1/sessions/{session['id']}/turns",
+            json={"prompt": "status", "client_request_id": "active-writer-retry"},
+        ))
+
+    assert turn["status"] == "completed"
+    assert turn["response"] == "answered: status"
+    assert backend.attempts == 2
 
 
 def test_chat_export_inlines_text_packages_images_and_removes_attachments(tmp_path: Path):
