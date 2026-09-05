@@ -143,7 +143,10 @@ class AgentService:
                 existing = await db.scalar(
                     select(AgentSession).where(AgentSession.native_thread_id == native_id)
                 )
-                if existing is None:
+                existing_segment = await db.scalar(
+                    select(AgentSegment).where(AgentSegment.native_thread_id == native_id)
+                )
+                if existing is None and existing_segment is None:
                     imported_session = AgentSession(
                         project_id=project.id,
                         native_thread_id=native_id,
