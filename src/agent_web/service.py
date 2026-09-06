@@ -27,7 +27,10 @@ from agent_web.db.models import (
     Turn,
 )
 
-logger = logging.getLogger(__name__)
+# Uvicorn configures this logger with the same stderr handler that the Windows
+# launcher redirects to data/logs/agent-web.err.log.  The root logger filters
+# application INFO records, which would otherwise hide lifecycle traces.
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
