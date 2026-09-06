@@ -56,6 +56,10 @@ class AgentService:
         self._active_projects: set[str] = set()
 
     @staticmethod
+    def _timestamp(value) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    @staticmethod
     async def _visible_session(db, session_id: str) -> AgentSession:
         session = await db.get(AgentSession, session_id)
         if session is None or session.archived:
@@ -268,9 +272,13 @@ class AgentService:
             messages.append({
                 "role": "user", "content": turn.prompt,
                 "attachments": load_metadata(turn.attachments_json),
+                "created_at": AgentService._timestamp(turn.created_at),
             })
             if turn.status != "running":
-                messages.append({"role": "assistant", "content": turn.response or ""})
+                messages.append({
+                    "role": "assistant", "content": turn.response or "",
+                    "created_at": AgentService._timestamp(turn.created_at),
+                })
         return messages
 
     async def switch_session(self, session_id: str, *, agent: str, model: str | None,
@@ -416,6 +424,9 @@ class AgentService:
                 AgentSegment.session_id == session_id).order_by(AgentSegment.created_at))).all())
             external = list((await db.scalars(select(ExternalMessage).where(
                 ExternalMessage.session_id == session_id).order_by(ExternalMessage.position))).all())
+        external_by_message = {}
+        for item in external:
+            external_by_message.setdefault((item.role, item.content), []).append(item)
         messages = []
         for segment in segments:
             metadata = {
@@ -444,18 +455,28 @@ class AgentService:
                     submitted.setdefault(turn.agent_prompt or turn.prompt, []).append(turn)
                 current_metadata = metadata
                 for item in live_history:
-                    display = {"role": item["role"], "content": item["content"]}
+                    known_external = external_by_message.get((item["role"], item["content"]), [])
+                    external_message = known_external.pop(0) if known_external else None
+                    display = {
+                        "role": item["role"], "content": item["content"],
+                        "created_at": self._timestamp(external_message.created_at) if external_message else None,
+                    }
                     matched_turn = None
                     if item["role"] == "user" and submitted.get(item["content"]):
                         matched_turn = submitted[item["content"]].pop(0)
-                        display = {"role": "user", "content": matched_turn.prompt,
-                                   "attachments": load_metadata(matched_turn.attachments_json)}
+                        display = {
+                            "role": "user", "content": matched_turn.prompt,
+                            "attachments": load_metadata(matched_turn.attachments_json),
+                            "created_at": self._timestamp(matched_turn.created_at),
+                        }
                         current_metadata = turn_metadata(matched_turn)
                         unmatched_turns.remove(matched_turn)
                     messages.append({**display, **current_metadata})
                     if matched_turn is not None and matched_turn.status == "failed":
-                        messages.append({"role": "assistant", "content": matched_turn.response or "Agent run failed.",
-                                         **current_metadata})
+                        messages.append({
+                            "role": "assistant", "content": matched_turn.response or "Agent run failed.",
+                            "created_at": self._timestamp(matched_turn.created_at), **current_metadata,
+                        })
                 for turn in unmatched_turns:
                     messages.extend({**item, **turn_metadata(turn)} for item in self._turn_messages([turn]))
                 continue
@@ -463,17 +484,28 @@ class AgentService:
                 matching = next((turn for turn in segment_turns
                                  if item.role == "user" and (turn.agent_prompt or turn.prompt) == item.content), None)
                 if matching:
-                    messages.append({"role": "user", "content": matching.prompt,
-                                     "attachments": load_metadata(matching.attachments_json),
-                                     **turn_metadata(matching)})
+                    messages.append({
+                        "role": "user", "content": matching.prompt,
+                        "attachments": load_metadata(matching.attachments_json),
+                        "created_at": self._timestamp(matching.created_at), **turn_metadata(matching),
+                    })
                 else:
-                    messages.append({"role": item.role, "content": item.content, **metadata})
+                    messages.append({
+                        "role": item.role, "content": item.content,
+                        "created_at": self._timestamp(item.created_at), **metadata,
+                    })
             for turn in segment_turns:
                 item_metadata = turn_metadata(turn)
                 messages.extend((
-                    {"role": "user", "content": turn.prompt,
-                     "attachments": load_metadata(turn.attachments_json), **item_metadata},
-                    {"role": "assistant", "content": turn.response or "", **item_metadata},
+                    {
+                        "role": "user", "content": turn.prompt,
+                        "attachments": load_metadata(turn.attachments_json),
+                        "created_at": self._timestamp(turn.created_at), **item_metadata,
+                    },
+                    {
+                        "role": "assistant", "content": turn.response or "",
+                        "created_at": self._timestamp(turn.created_at), **item_metadata,
+                    },
                 ))
         running_turns = sum(turn.status == "running" for turn in stored_turns)
         if running_turns:

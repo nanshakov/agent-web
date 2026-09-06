@@ -285,6 +285,20 @@ button.secondary:hover { border-color: #b8b8ba; background: var(--surface-subtle
   background: var(--surface-subtle);
 }
 
+.timestamp {
+  display: block;
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.chat-open .timestamp {
+  display: inline;
+  margin: 0 0 0 8px;
+}
+
 .segment {
   max-width: 760px;
   margin: 7px auto 8px;

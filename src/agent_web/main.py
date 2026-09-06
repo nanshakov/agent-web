@@ -343,8 +343,8 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
 
     @app.get("/api/v1/projects/{project_id}/sessions")
     async def sessions(project_id: str):
-        from sqlalchemy import select
-        from agent_web.db.models import AgentSegment, AgentSession, Turn
+        from sqlalchemy import func, select
+        from agent_web.db.models import AgentSegment, AgentSession, ExternalMessage, Turn
 
         async with session_factory() as db:
             rows = list((await db.scalars(
@@ -360,13 +360,37 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 )).all()
                 for turn in turns:
                     fallback_titles.setdefault(turn.session_id, chat_title(turn.prompt))
-        return [{"id": row.id, "title": row.title or fallback_titles.get(row.id),
-                 "native_thread_id": active.get(row.id).native_thread_id if row.id in active else row.native_thread_id,
-                 "source": active.get(row.id).agent if row.id in active else "codex",
-                 "agent": active.get(row.id).agent if row.id in active else "codex",
-                 "model": active.get(row.id).model if row.id in active else None,
-                 "reasoning": active.get(row.id).reasoning if row.id in active else None,
-                 "sandbox": active.get(row.id).sandbox if row.id in active else "workspace_write"} for row in rows]
+            session_ids = [row.id for row in rows]
+            latest_activity = {row.id: row.created_at for row in rows}
+            if session_ids:
+                for session_id, timestamp in (await db.execute(
+                    select(Turn.session_id, func.max(Turn.created_at)).where(
+                        Turn.session_id.in_(session_ids)
+                    ).group_by(Turn.session_id)
+                )).all():
+                    if timestamp is not None:
+                        latest_activity[session_id] = max(latest_activity[session_id], timestamp)
+                for session_id, timestamp in (await db.execute(
+                    select(ExternalMessage.session_id, func.max(ExternalMessage.created_at)).where(
+                        ExternalMessage.session_id.in_(session_ids)
+                    ).group_by(ExternalMessage.session_id)
+                )).all():
+                    if timestamp is not None:
+                        latest_activity[session_id] = max(latest_activity[session_id], timestamp)
+        result = []
+        for row in rows:
+            segment = active.get(row.id)
+            result.append({
+                "id": row.id, "title": row.title or fallback_titles.get(row.id),
+                "created_at": row.created_at, "last_activity_at": latest_activity[row.id],
+                "native_thread_id": segment.native_thread_id if segment else row.native_thread_id,
+                "source": segment.agent if segment else "codex",
+                "agent": segment.agent if segment else "codex",
+                "model": segment.model if segment else None,
+                "reasoning": segment.reasoning if segment else None,
+                "sandbox": segment.sandbox if segment else "workspace_write",
+            })
+        return sorted(result, key=lambda item: (item["last_activity_at"], item["id"]), reverse=True)
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_session(session_id: str):

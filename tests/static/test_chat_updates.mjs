@@ -84,6 +84,15 @@ test('later consecutive agent messages appear', async () => {
   assert.match(messages.innerHTML, /First[\s\S]*Second/);
 });
 
+test('messages render their timestamp when the API provides one', () => {
+  const markup = vm.runInContext(
+    "messageMarkup({role:'user',content:'Timed',created_at:'2026-09-06T12:34:00Z'})",
+    context,
+  );
+  assert.match(markup, /class=\"timestamp\"/);
+  assert.match(markup, /datetime=\"2026-09-06T12:34:00Z\"/);
+});
+
 test('project list periodically refreshes discovered chats', async () => {
   vm.runInContext(`
     projectRefreshes=0;

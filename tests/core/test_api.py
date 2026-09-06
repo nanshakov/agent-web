@@ -147,10 +147,42 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
         assert turn["rendered_response"] == "<p>answered: hello</p>\n"
         sessions = client.get(f"/api/v1/projects/{project_id}/sessions").json()
         assert sessions[0]["title"] == "hello"
+        assert sessions[0]["created_at"]
+        assert sessions[0]["last_activity_at"]
+        history = client.get(f"/api/v1/sessions/{session.json()['id']}/messages").json()
+        assert all(message["created_at"] for message in history)
         with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
             database.execute("UPDATE agent_sessions SET title = NULL")
         legacy_sessions = client.get(f"/api/v1/projects/{project_id}/sessions").json()
         assert legacy_sessions[0]["title"] == "hello"
+
+
+def test_sessions_are_ordered_by_latest_activity(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
+            database.executemany(
+                "INSERT INTO agent_sessions (id, project_id, native_thread_id, title, archived, created_at) "
+                "VALUES (?, ?, ?, ?, 0, ?)",
+                [
+                    ("old-chat", project["id"], "old-thread", "Older", "2026-01-01 10:00:00"),
+                    ("new-chat", project["id"], "new-thread", "Newer", "2026-01-02 10:00:00"),
+                ],
+            )
+            database.execute(
+                "INSERT INTO turns (id, session_id, client_request_id, prompt, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("old-turn", "old-chat", "old-request", "A newer message", "completed", "2026-01-03 10:00:00"),
+            )
+            database.commit()
+        sessions = client.get(f"/api/v1/projects/{project['id']}/sessions").json()
+
+    assert [session["id"] for session in sessions] == ["old-chat", "new-chat"]
+    assert all(session["last_activity_at"] for session in sessions)
 
 
 def test_failed_turn_remains_in_chat_history(tmp_path: Path):
