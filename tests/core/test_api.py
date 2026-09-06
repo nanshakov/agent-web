@@ -167,6 +167,11 @@ def test_failed_turn_remains_in_chat_history(tmp_path: Path):
             json={"prompt": "Launch agent", "client_request_id": "failed-agent-start"},
         ))
         history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+        with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
+            audit_events = database.execute(
+                "SELECT kind, subject_id, detail FROM audit_events WHERE subject_id = ? ORDER BY created_at",
+                (turn["id"],),
+            ).fetchall()
 
     assert turn["status"] == "failed"
     assert "RuntimeError: agent process could not start" in turn["response"]
@@ -174,6 +179,38 @@ def test_failed_turn_remains_in_chat_history(tmp_path: Path):
     assert [(message["role"], message["content"]) for message in history] == [
         ("user", "Launch agent"),
         ("assistant", turn["response"]),
+    ]
+    assert [event[0] for event in audit_events] == ["turn.started", "turn.dispatched", "turn.failed"]
+    assert all(event[1] == turn["id"] for event in audit_events)
+    assert all('"session_id"' in event[2] for event in audit_events)
+    assert '"error_type":"RuntimeError"' in audit_events[-1][2]
+
+
+def test_running_turn_is_visible_in_chat_history_and_is_audited(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        with sqlite3.connect(tmp_path / "data" / "agent-web.sqlite3") as database:
+            segment_id = database.execute(
+                "SELECT id FROM agent_segments WHERE session_id = ?", (chat["id"],)
+            ).fetchone()[0]
+            database.execute(
+                "INSERT INTO turns (id, session_id, segment_id, client_request_id, prompt, status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid4()), chat["id"], segment_id, "running-history-request", "still working", "running"),
+            )
+            database.commit()
+        history = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+
+    assert [(message["role"], message["content"]) for message in history] == [
+        ("user", "Earlier question"),
+        ("assistant", "Earlier answer"),
+        ("user", "still working"),
     ]
 
 

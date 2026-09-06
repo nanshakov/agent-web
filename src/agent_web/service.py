@@ -261,10 +261,15 @@ class AgentService:
 
     @staticmethod
     def _turn_messages(turns: list[Turn]) -> list[dict[str, object]]:
-        return [message for turn in turns for message in (
-            {"role": "user", "content": turn.prompt, "attachments": load_metadata(turn.attachments_json)},
-            {"role": "assistant", "content": turn.response or ""},
-        )]
+        messages = []
+        for turn in turns:
+            messages.append({
+                "role": "user", "content": turn.prompt,
+                "attachments": load_metadata(turn.attachments_json),
+            })
+            if turn.status != "running":
+                messages.append({"role": "assistant", "content": turn.response or ""})
+        return messages
 
     async def switch_session(self, session_id: str, *, agent: str, model: str | None,
                              reasoning: str | None, sandbox: str,
@@ -396,11 +401,14 @@ class AgentService:
         except Exception as exc:
             # Saved turns still give the user a useful local history when a
             # native app is offline or removed.
-            pass
+            logger.warning(
+                "turn_trace event=external_history_sync_failed session_id=%s error_type=%s",
+                session_id, type(exc).__name__, exc_info=True,
+            )
         async with self.session_factory() as db:
             session = await self._visible_session(db, session_id)
             stored_turns = list((await db.scalars(select(Turn).where(
-                Turn.session_id == session_id, Turn.status.in_(("completed", "failed"))
+                Turn.session_id == session_id, Turn.status.in_(("running", "completed", "failed"))
             ).order_by(Turn.created_at))).all())
             segments = list((await db.scalars(select(AgentSegment).where(
                 AgentSegment.session_id == session_id).order_by(AgentSegment.created_at))).all())
@@ -465,6 +473,10 @@ class AgentService:
                      "attachments": load_metadata(turn.attachments_json), **item_metadata},
                     {"role": "assistant", "content": turn.response or "", **item_metadata},
                 ))
+        logger.info(
+            "turn_trace event=history_read session_id=%s messages=%s live_history=%s stored_turns=%s",
+            session_id, len(messages), live_history is not None, len(stored_turns),
+        )
         return messages
 
     async def export_context(self, session_id: str) -> dict[str, object]:
@@ -605,9 +617,18 @@ class AgentService:
                 segment.agent, segment.model, segment.reasoning, segment.sandbox
             )
             db.add(turn)
-            db.add(AuditEvent(kind="turn.started", subject_id=turn.id))
+            await db.flush()
+            detail = json.dumps({
+                "session_id": session.id, "segment_id": segment.id, "agent": segment.agent,
+                "status": turn.status,
+            }, separators=(",", ":"))
+            db.add(AuditEvent(kind="turn.started", subject_id=turn.id, detail=detail))
             await db.commit()
             await db.refresh(turn)
+        logger.info(
+            "turn_trace event=started turn_id=%s session_id=%s segment_id=%s agent=%s",
+            turn.id, session.id, segment.id, segment.agent,
+        )
         self._active_projects.add(project.id)
         return turn, True
 
@@ -625,6 +646,18 @@ class AgentService:
             segment = await db.get(AgentSegment, turn.segment_id)
             if segment is None:
                 raise RuntimeError("This chat has no active agent segment")
+            db.add(AuditEvent(
+                kind="turn.dispatched", subject_id=turn.id,
+                detail=json.dumps({
+                    "session_id": session.id, "segment_id": segment.id, "agent": segment.agent,
+                    "status": turn.status,
+                }, separators=(",", ":")),
+            ))
+            await db.commit()
+        logger.info(
+            "turn_trace event=dispatched turn_id=%s session_id=%s segment_id=%s agent=%s",
+            turn.id, session.id, segment.id, segment.agent,
+        )
         try:
             backend = self.backends.get(segment.agent)
             if backend is None:
@@ -664,11 +697,24 @@ class AgentService:
                 if active.id == segment.id:
                     active.handoff_pending = False
                     active.handoff_context = None
-                db.add(AuditEvent(kind="turn.completed", subject_id=turn.id))
+                db.add(AuditEvent(
+                    kind="turn.completed", subject_id=turn.id,
+                    detail=json.dumps({
+                        "session_id": session.id, "segment_id": segment.id, "agent": segment.agent,
+                        "status": stored.status,
+                    }, separators=(",", ":")),
+                ))
                 await db.commit()
+                logger.info(
+                    "turn_trace event=completed turn_id=%s session_id=%s segment_id=%s agent=%s",
+                    turn.id, session.id, segment.id, segment.agent,
+                )
                 return stored
         except Exception as exc:
-            logger.exception("Agent turn %s failed", turn.id)
+            logger.exception(
+                "turn_trace event=failed turn_id=%s session_id=%s segment_id=%s agent=%s error_type=%s",
+                turn.id, session.id, segment.id, segment.agent, type(exc).__name__,
+            )
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)
                 stored.status = "failed"
@@ -676,6 +722,13 @@ class AgentService:
                     f"Agent run failed: {type(exc).__name__}: {exc}\n\n"
                     f"Traceback:\n{traceback.format_exc()}"
                 )
+                db.add(AuditEvent(
+                    kind="turn.failed", subject_id=turn.id,
+                    detail=json.dumps({
+                        "session_id": session.id, "segment_id": segment.id, "agent": segment.agent,
+                        "status": stored.status, "error_type": type(exc).__name__,
+                    }, separators=(",", ":")),
+                ))
                 await db.commit()
                 return stored
         finally:
