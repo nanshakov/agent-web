@@ -27,10 +27,9 @@ from agent_web.db.models import (
     Turn,
 )
 
-# Uvicorn configures this logger with the same stderr handler that the Windows
-# launcher redirects to data/logs/agent-web.err.log.  The root logger filters
-# application INFO records, which would otherwise hide lifecycle traces.
-logger = logging.getLogger("uvicorn.error")
+# This logger is configured by create_app with a bounded dedicated file.
+# Records intentionally contain identifiers and statuses, never prompt/response text.
+logger = logging.getLogger("agent_web.turn_trace")
 
 
 @dataclass(frozen=True)
@@ -476,10 +475,12 @@ class AgentService:
                      "attachments": load_metadata(turn.attachments_json), **item_metadata},
                     {"role": "assistant", "content": turn.response or "", **item_metadata},
                 ))
-        logger.info(
-            "turn_trace event=history_read session_id=%s messages=%s live_history=%s stored_turns=%s",
-            session_id, len(messages), live_history is not None, len(stored_turns),
-        )
+        running_turns = sum(turn.status == "running" for turn in stored_turns)
+        if running_turns:
+            logger.info(
+                "turn_trace event=history_contains_running session_id=%s messages=%s running_turns=%s",
+                session_id, len(messages), running_turns,
+            )
         return messages
 
     async def export_context(self, session_id: str) -> dict[str, object]:

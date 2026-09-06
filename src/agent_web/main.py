@@ -6,6 +6,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Awaitable, Callable
+from logging.handlers import RotatingFileHandler
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -25,6 +26,23 @@ from agent_web.updater import UpdateError, Updater
 
 
 logger = logging.getLogger(__name__)
+TURN_TRACE_LOGGER = "agent_web.turn_trace"
+
+
+def configure_turn_trace_logger(data_dir: Path) -> logging.Handler | None:
+    """Write bounded, content-free turn correlation records outside Uvicorn's logger."""
+    log_path = (data_dir / "logs" / "turn-trace.log").resolve()
+    trace_logger = logging.getLogger(TURN_TRACE_LOGGER)
+    trace_logger.setLevel(logging.INFO)
+    trace_logger.disabled = False
+    trace_logger.propagate = False
+    if any(getattr(handler, "baseFilename", None) == str(log_path) for handler in trace_logger.handlers):
+        return None
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    trace_logger.addHandler(handler)
+    return handler
 
 
 async def periodically_import(
@@ -85,6 +103,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     async def lifespan(app: FastAPI):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         migrate_database(settings.data_dir, settings.database_url)
+        trace_handler = configure_turn_trace_logger(settings.data_dir)
         await service.recover_interrupted_turns()
         app.state.update_status = {"state": "not_configured"}
 
@@ -121,6 +140,9 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         update_task.cancel()
         await asyncio.gather(import_task, cline_import_task, update_task, return_exceptions=True)
         await engine.dispose()
+        if trace_handler is not None:
+            logging.getLogger(TURN_TRACE_LOGGER).removeHandler(trace_handler)
+            trace_handler.close()
 
     app = FastAPI(title="Agent Web", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.service = service

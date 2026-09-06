@@ -184,6 +184,10 @@ def test_failed_turn_remains_in_chat_history(tmp_path: Path):
     assert all(event[1] == turn["id"] for event in audit_events)
     assert all('"session_id"' in event[2] for event in audit_events)
     assert '"error_type":"RuntimeError"' in audit_events[-1][2]
+    trace_log = (tmp_path / "data" / "logs" / "turn-trace.log").read_text(encoding="utf-8")
+    assert f"turn_id={turn['id']}" in trace_log
+    assert "event=failed" in trace_log
+    assert "Launch agent" not in trace_log
 
 
 def test_running_turn_is_visible_in_chat_history_and_is_audited(tmp_path: Path):
