@@ -57,7 +57,7 @@ def chat_title(prompt: str) -> str:
 class AgentService:
     MAX_HANDOFF_CHARS = 120_000
     NATIVE_THREAD_BUSY_RETRY_DELAY_SECONDS = 1.0
-    NATIVE_THREAD_BUSY_RETRY_ATTEMPTS = 300
+    NATIVE_THREAD_BUSY_RETRY_ATTEMPTS = 5
     def __init__(self, session_factory: async_sessionmaker, backends: dict[str, CodexBackend] | CodexBackend,
                  roots: tuple[Path, ...]):
         self.session_factory = session_factory
@@ -363,8 +363,54 @@ class AgentService:
             await db.refresh(segment)
             return segment
 
-    async def _prepare_handoff_context(self, history: list[dict[str, str]], source: AgentSegment,
-                                       project: Project) -> list[dict[str, str]]:
+    async def _replace_busy_native_segment(
+        self, turn: Turn, session: AgentSession, project: Project, source: AgentSegment,
+        backend: CodexBackend,
+    ) -> tuple[AgentSegment, list[dict[str, object]]]:
+        """Continue a logical chat in a fresh native thread when its writer never releases."""
+        history = await self.session_history(session.id)
+        for index in range(len(history) - 1, -1, -1):
+            item = history[index]
+            if item.get("role") == "user" and item.get("content") == turn.prompt:
+                history.pop(index)
+                break
+        handoff_history = await self._prepare_handoff_context(history, source, project)
+        native_id = await backend.start_thread(
+            Path(project.path), model=turn.model, sandbox=turn.sandbox or source.sandbox,
+            reasoning=turn.reasoning, approval_policy="auto",
+        )
+        async with self.session_factory() as db:
+            active = await self._active_segment(db, session.id)
+            if active.id != source.id:
+                raise RuntimeError("The active chat segment changed while replacing a busy native thread")
+            active.status = "superseded"
+            replacement = AgentSegment(
+                session_id=session.id, native_thread_id=native_id, agent=source.agent,
+                model=turn.model, reasoning=turn.reasoning,
+                sandbox=turn.sandbox or source.sandbox,
+            )
+            db.add(replacement)
+            await db.flush()
+            stored_turn = await db.get(Turn, turn.id)
+            stored_turn.segment_id = replacement.id
+            db.add(AuditEvent(
+                kind="chat.native_thread_replaced", subject_id=session.id,
+                detail=json.dumps({
+                    "old_segment_id": source.id,
+                    "new_segment_id": replacement.id,
+                    "reason": "active_writer",
+                }, separators=(",", ":")),
+            ))
+            await db.commit()
+            await db.refresh(replacement)
+        logger.warning(
+            "Native Codex thread %s stayed busy; continuing turn %s in replacement thread %s",
+            source.native_thread_id, turn.id, native_id,
+        )
+        return replacement, handoff_history
+
+    async def _prepare_handoff_context(self, history: list[dict[str, object]], source: AgentSegment,
+                                       project: Project) -> list[dict[str, object]]:
         if len(self._transcript(history)) <= self.MAX_HANDOFF_CHARS:
             return history
         backend = self.backends.get(source.agent)
@@ -384,12 +430,22 @@ class AgentService:
             except Exception:
                 summary = ""
         if summary:
-            return [{"role": "assistant", "content": f"Handoff summary from {source.agent}:\n{summary}"}] + history[-20:]
-        return [{"role": "assistant", "content": "Earlier history omitted because it exceeded the handoff budget."}] + history[-20:]
+            summary_message: dict[str, object] = {
+                "role": "assistant",
+                "content": f"Handoff summary from {source.agent}:\n{summary}",
+            }
+            return [summary_message, *history[-20:]]
+        omitted_message: dict[str, object] = {
+            "role": "assistant",
+            "content": "Earlier history omitted because it exceeded the handoff budget.",
+        }
+        return [omitted_message, *history[-20:]]
 
     @staticmethod
-    def _transcript(messages: list[dict[str, str]]) -> str:
-        return "\n\n".join(f"{item['role'].upper()}: {item['content']}" for item in messages)
+    def _transcript(messages: list[dict[str, object]]) -> str:
+        return "\n\n".join(
+            f"{str(item['role']).upper()}: {item['content']}" for item in messages
+        )
 
     async def _sync_external_history(
         self, session_id: str,
@@ -640,7 +696,7 @@ class AgentService:
         return ChatExport(output.getvalue(), "chat.zip", "application/zip")
 
     @staticmethod
-    def _handoff_prompt(messages: list[dict[str, str]], prompt: str) -> str:
+    def _handoff_prompt(messages: list[dict[str, object]], prompt: str) -> str:
         transcript = AgentService._transcript(messages)
         return (
             "You are continuing work from another coding agent in the same project. "
@@ -768,6 +824,7 @@ class AgentService:
                     model=turn.model, reasoning=turn.reasoning,
                 )
 
+            response = ""
             for attempt in range(1, self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS + 1):
                 try:
                     response = await run_backend_turn()
@@ -776,9 +833,15 @@ class AgentService:
                     if not self._is_active_writer_conflict(exc):
                         raise
                     if attempt == self.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS:
-                        raise RuntimeError(
-                            "Codex Desktop kept this chat busy for five minutes; try again after it finishes."
-                        ) from exc
+                        segment, earlier = await self._replace_busy_native_segment(
+                            turn, session, project, segment, backend,
+                        )
+                        submitted_prompt = self._handoff_prompt(earlier, turn.agent_prompt or turn.prompt)
+                        register = getattr(backend, "register_thread", None)
+                        if register is not None:
+                            register(segment.native_thread_id, Path(project.path))
+                        response = await run_backend_turn()
+                        break
                     logger.info(
                         "Native Codex thread %s is busy; retrying turn %s (%s/%s)",
                         segment.native_thread_id, turn.id, attempt,

@@ -1,3 +1,4 @@
+import hashlib
 import io
 import sqlite3
 import time
@@ -114,6 +115,23 @@ class BusyThenReadyCodex(FakeCodex):
         return await super().run_turn(
             native_thread_id, prompt, sandbox=sandbox, model=model, reasoning=reasoning
         )
+
+
+class PermanentlyBusyCodex(FakeCodex):
+    async def start_thread(self, cwd: Path, *, model, sandbox, reasoning=None, approval_policy="auto"):
+        self.started_threads += 1
+        native_id = f"fixture-thread-{self.started_threads}"
+        self.starts.append({"model": model, "reasoning": reasoning})
+        return native_id
+
+    async def run_turn(self, native_thread_id, prompt, *, sandbox, model=None, reasoning=None):
+        self.prompts.append(prompt)
+        self.runs.append({"thread": native_thread_id, "model": model, "reasoning": reasoning})
+        if native_thread_id == "fixture-thread-1":
+            raise RuntimeError(
+                "JSON-RPC error -32600: thread fixture-thread-1 already has an active writer"
+            )
+        return f"answered: {prompt}"
 
 
 def completed_turn(client: TestClient, response):
@@ -267,6 +285,46 @@ def test_turn_retries_when_native_codex_thread_has_an_active_writer(tmp_path: Pa
     assert turn["status"] == "completed"
     assert turn["response"] == "answered: status"
     assert backend.attempts == 2
+
+
+def test_turn_rotates_a_permanently_busy_native_thread_and_transfers_history(tmp_path: Path):
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    backend = PermanentlyBusyCodex()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=backend)
+    app.state.service.NATIVE_THREAD_BUSY_RETRY_ATTEMPTS = 2
+    app.state.service.NATIVE_THREAD_BUSY_RETRY_DELAY_SECONDS = 0
+
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        session = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        turn = completed_turn(client, client.post(
+            f"/api/v1/sessions/{session['id']}/turns",
+            json={"prompt": "continue", "client_request_id": "active-writer-rollover"},
+        ))
+        context = client.get(f"/api/v1/sessions/{session['id']}/context").json()
+
+    assert turn["status"] == "completed"
+    assert backend.started_threads == 2
+    assert backend.runs[-1]["thread"] == "fixture-thread-2"
+    assert "Previous chat" in backend.prompts[-1]
+    assert "Earlier answer" in backend.prompts[-1]
+    assert [segment["status"] for segment in context["segments"]] == ["superseded", "active"]
+
+
+def test_home_versions_app_javascript_from_its_content(tmp_path: Path):
+    root = tmp_path / "projects"
+    root.mkdir()
+    app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
+    expected = hashlib.sha256(
+        (Path(__file__).parents[2] / "src" / "agent_web" / "static" / "app.js").read_bytes()
+    ).hexdigest()[:12]
+
+    with TestClient(app) as client:
+        html = client.get("/").text
+
+    assert f'/static/app.js?v={expected}' in html
 
 
 def test_session_websocket_replays_turn_state(tmp_path: Path):

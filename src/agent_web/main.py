@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -97,7 +98,10 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         "codex": SdkCodexBackend(), "opencode": OpenCodeAcpBackend(),
     }
     service = AgentService(session_factory, backends, settings.allowed_roots)
-    templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+    package_directory = Path(__file__).parent
+    static_directory = package_directory / "static"
+    templates = Jinja2Templates(directory=str(package_directory / "templates"))
+    asset_version = hashlib.sha256((static_directory / "app.js").read_bytes()).hexdigest()[:12]
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -147,7 +151,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     app = FastAPI(title="Agent Web", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.settings = settings
-    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+    app.mount("/static", StaticFiles(directory=str(static_directory)), name="static")
 
     async def agent_usage(name: str, item) -> dict[str, object]:
         usage = getattr(item, "usage", None)
@@ -165,7 +169,10 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request):
-        return templates.TemplateResponse(request, "index.html", {"lan_mode": settings.host == "0.0.0.0"})
+        return templates.TemplateResponse(request, "index.html", {
+            "lan_mode": settings.host == "0.0.0.0",
+            "asset_version": asset_version,
+        })
 
     @app.get("/api/v1/health")
     async def health():

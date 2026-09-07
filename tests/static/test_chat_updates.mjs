@@ -7,6 +7,8 @@ const elements = new Map();
 const scrollIntoViewCalls = [];
 const confirmations = [];
 const switchRequests = [];
+const documentEvents = new Map();
+const windowEvents = new Map();
 const element = (name) => ({
   hidden: false,
   innerHTML: '',
@@ -47,6 +49,8 @@ const context = vm.createContext({
   document: {
     querySelector: (selector) => elements.get(selector) ?? element(selector),
     querySelectorAll: () => [],
+    visibilityState: 'visible',
+    addEventListener: (name, callback) => documentEvents.set(name, callback),
   },
   fetch: async (url) => ({
     ok: true,
@@ -60,6 +64,7 @@ const context = vm.createContext({
   Blob,
   FormData,
   SpeechRecognition: SpeechRecognitionMock,
+  addEventListener: (name, callback) => windowEvents.set(name, callback),
   confirm: (message) => { confirmations.push(message); return false; },
 });
 
@@ -101,6 +106,25 @@ test('agent messages stream while the submitted turn is still marked running', (
 
   assert.equal(streamed.textContent, 'Live reply');
   vm.runInContext('turnRunning=false', context);
+});
+
+test('returning to the page or network resynchronizes history and the session stream', async () => {
+  context.recoveryCalls = [];
+  vm.runInContext(`
+    activeSession='chat-1';
+    refreshMessages=async()=>recoveryCalls.push('history');
+    connectSessionStream=id=>recoveryCalls.push('stream:'+id);
+  `, context);
+
+  await documentEvents.get('visibilitychange')();
+  await windowEvents.get('pageshow')();
+  await windowEvents.get('online')();
+
+  assert.deepEqual(context.recoveryCalls, [
+    'history', 'stream:chat-1',
+    'history', 'stream:chat-1',
+    'history', 'stream:chat-1',
+  ]);
 });
 
 test('messages render their timestamp when the API provides one', () => {
