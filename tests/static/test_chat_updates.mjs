@@ -84,6 +84,21 @@ test('later consecutive agent messages appear', async () => {
   assert.match(messages.innerHTML, /First[\s\S]*Second/);
 });
 
+test('agent messages appear while the submitted turn is still marked running', async () => {
+  messages.innerHTML = '<div class="message">Agent is working...</div>';
+  vm.runInContext(`
+    turnRunning=true;
+    request=async(path)=>path.includes('/messages')
+      ? [{role:'assistant',content:'Live reply',rendered_content:'<p>Live reply</p>'}]
+      : [];
+  `, context);
+
+  await intervals.at(-1)();
+
+  assert.match(messages.innerHTML, /Live reply/);
+  vm.runInContext('turnRunning=false', context);
+});
+
 test('messages render their timestamp when the API provides one', () => {
   const markup = vm.runInContext(
     "messageMarkup({role:'user',content:'Timed',created_at:'2026-09-06T12:34:00Z'})",
