@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <title>Agent Web</title>
-    <link rel="stylesheet" href="/static/app.css?v=light-chat-redesign">
+    <link rel="stylesheet" href="/static/app.css?v=voice-input">
     <link rel="stylesheet" href="/static/settings.css?v=light-chat-redesign">
     <link rel="stylesheet" href="/static/delete-chats.css?v=light-chat-redesign">
     <link rel="stylesheet" href="/static/markdown.css?v=light-chat-redesign">
@@ -81,16 +81,18 @@
             <div class="composer-box">
               <label class="prompt-field"><span class="sr-only">Message</span><textarea name="prompt" placeholder="Message your agent"></textarea></label>
               <div class="composer-actions">
+                <button class="secondary voice-control" type="button" id="voice-record" aria-pressed="false" aria-describedby="voice-status" title="Dictate a message"><span aria-hidden="true">🎙</span><span class="sr-only">Start voice input</span></button>
                 <label class="attachment-picker"><span>Attach</span><input name="files" type="file" multiple accept="text/*,image/*,.json,.csv,.py,.js,.ts,.tsx,.jsx,.yaml,.yml,.toml,.xml,.sql"></label>
-                <button>Send</button>
+                <button type="submit">Send</button>
               </div>
               <div id="selected-files" aria-live="polite"></div>
+              <p id="voice-status" class="voice-status" aria-live="polite"></p>
             </div>
             <div id="chat-settings"></div>
           </form>
         </section>
       </section>
     </main>
-    <script src="/static/app.js?v=light-chat-redesign"></script>
+    <script src="/static/app.js?v=voice-input"></script>
   </body>
 </html>

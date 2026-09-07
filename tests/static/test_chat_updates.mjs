@@ -11,17 +11,28 @@ const element = (name) => ({
   hidden: false,
   innerHTML: '',
   textContent: '',
+  value: '',
+  attributes: new Map(),
   scrollHeight: 240,
   scrollTop: 0,
   scrollIntoView: (options) => scrollIntoViewCalls.push({name, options}),
   insertAdjacentHTML: (_position, markup) => { elements.get(name).innerHTML += markup; },
   querySelector: () => ({disabled: false}),
+  setAttribute(attribute, value) { this.attributes.set(attribute, value); },
+  getAttribute(attribute) { return this.attributes.get(attribute); },
+  focus() {},
 });
-for (const name of ['#project-form', '#turn-form', '#messages', '#session-title', '#chat', '#chat-settings', '#limits']) {
+for (const name of ['#project-form', '#turn-form', '#messages', '#session-title', '#chat', '#chat-settings', '#limits', '#voice-record', '#voice-status', '#turn-form [name="prompt"]']) {
   elements.set(name, element(name));
 }
 
 const intervals = [];
+const recognizers = [];
+class SpeechRecognitionMock {
+  constructor() { recognizers.push(this); }
+  start() { this.onstart(); }
+  stop() { this.onend(); }
+}
 const histories = [
   [{role: 'assistant', content: 'First', rendered_content: '<p>First</p>'}],
   [
@@ -48,6 +59,7 @@ const context = vm.createContext({
   URL,
   Blob,
   FormData,
+  SpeechRecognition: SpeechRecognitionMock,
   confirm: (message) => { confirmations.push(message); return false; },
 });
 
@@ -106,6 +118,19 @@ test('messages render their timestamp when the API provides one', () => {
   );
   assert.match(markup, /class=\"timestamp\"/);
   assert.match(markup, /datetime=\"2026-09-06T12:34:00Z\"/);
+});
+
+test('voice dictation appends a final transcript to the message draft', () => {
+  const voiceButton = elements.get('#voice-record');
+  voiceButton.onclick();
+  recognizers[0].onresult({
+    resultIndex: 0,
+    results: [{isFinal: true, 0: {transcript: 'Review the deployment logs'}}],
+  });
+
+  assert.equal(elements.get('#turn-form [name="prompt"]').value, 'Review the deployment logs');
+  assert.equal(elements.get('#voice-status').textContent, 'Listening…');
+  assert.equal(voiceButton.getAttribute('aria-pressed'), 'true');
 });
 
 test('project list periodically refreshes discovered chats', async () => {
