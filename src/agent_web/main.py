@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -10,9 +9,8 @@ from typing import Awaitable, Callable
 from logging.handlers import RotatingFileHandler
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from agent_web.cline import ClineHistory
@@ -99,9 +97,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     }
     service = AgentService(session_factory, backends, settings.allowed_roots)
     package_directory = Path(__file__).parent
-    static_directory = package_directory / "static"
-    templates = Jinja2Templates(directory=str(package_directory / "templates"))
-    asset_version = hashlib.sha256((static_directory / "app.js").read_bytes()).hexdigest()[:12]
+    ui_directory = package_directory / "ui"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -151,7 +147,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     app = FastAPI(title="Agent Web", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.service = service
     app.state.settings = settings
-    app.mount("/static", StaticFiles(directory=str(static_directory)), name="static")
+    app.mount("/assets", StaticFiles(directory=str(ui_directory / "assets")), name="ui-assets")
 
     async def agent_usage(name: str, item) -> dict[str, object]:
         usage = getattr(item, "usage", None)
@@ -167,17 +163,17 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
                 else "Codex usage is temporarily unavailable."
             return {"available": False, "message": message}
 
-    @app.get("/", response_class=HTMLResponse)
-    async def home(request: Request):
-        return templates.TemplateResponse(request, "index.html", {
-            "lan_mode": settings.host == "0.0.0.0",
-            "asset_version": asset_version,
-        })
+    @app.get("/")
+    @app.get("/projects/{project_id}")
+    @app.get("/projects/{project_id}/chats/{session_id}")
+    async def home():
+        return FileResponse(ui_directory / "index.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/v1/health")
     async def health():
         statuses = {name: await item.health() for name, item in backends.items()}
         return {"status": "ready" if any(ready for ready, _ in statuses.values()) else "agent_unavailable",
+                "lan_mode": settings.host == "0.0.0.0",
                 "agents": {name: {"ready": ready, "detail": detail} for name, (ready, detail) in statuses.items()}}
 
     @app.get("/api/v1/capabilities")

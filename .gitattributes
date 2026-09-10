@@ -1,0 +1,5 @@
+frontend/** text eol=lf
+scripts/start-agent-web.sh text eol=lf
+src/agent_web/ui/** text eol=lf linguist-generated=true
+# Bundler output includes intentional whitespace inside dependency templates.
+src/agent_web/ui/assets/* -whitespace

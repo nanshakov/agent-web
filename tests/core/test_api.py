@@ -1,5 +1,5 @@
-import hashlib
 import io
+import re
 import sqlite3
 import time
 import zipfile
@@ -266,6 +266,8 @@ def test_running_turn_is_visible_in_chat_history_and_is_audited(tmp_path: Path):
         ("assistant", "Earlier answer"),
         ("user", "still working"),
     ]
+    assert history[-1]["turn_id"]
+    assert history[-1]["status"] == "running"
 
 
 def test_turn_retries_when_native_codex_thread_has_an_active_writer(tmp_path: Path):
@@ -313,18 +315,22 @@ def test_turn_rotates_a_permanently_busy_native_thread_and_transfers_history(tmp
     assert [segment["status"] for segment in context["segments"]] == ["superseded", "active"]
 
 
-def test_home_versions_app_javascript_from_its_content(tmp_path: Path):
+def test_react_routes_serve_bundled_assets_without_masking_api_errors(tmp_path: Path):
     root = tmp_path / "projects"
     root.mkdir()
     app = create_app(Settings(data_dir=tmp_path / "data", allowed_roots=(root,)), backend=FakeCodex())
-    expected = hashlib.sha256(
-        (Path(__file__).parents[2] / "src" / "agent_web" / "static" / "app.js").read_bytes()
-    ).hexdigest()[:12]
-
     with TestClient(app) as client:
-        html = client.get("/").text
-
-    assert f'/static/app.js?v={expected}' in html
+        home = client.get("/")
+        assert '<div id="root"></div>' in home.text
+        assert home.headers["cache-control"] == "no-cache"
+        assert client.get("/projects/example/chats/existing").text == home.text
+        assert client.get("/projects/example").text == home.text
+        match = re.search(r'src="(/assets/[^"]+\.js)"', home.text)
+        assert match is not None
+        asset = match.group(1)
+        assert client.get(asset).status_code == 200
+        assert client.get("/api/v1/missing").status_code == 404
+        assert client.get("/assets/missing.js").status_code == 404
 
 
 def test_session_websocket_replays_turn_state(tmp_path: Path):

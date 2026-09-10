@@ -530,11 +530,13 @@ class AgentService:
             def turn_metadata(turn: Turn) -> dict[str, str]:
                 if turn.agent is not None:
                     return {
+                        "turn_id": turn.id, "status": turn.status,
                         "agent": turn.agent,
                         "model": turn.model or "",
                         "reasoning": turn.reasoning or "",
                     }
                 return {
+                    "turn_id": turn.id, "status": turn.status,
                     "agent": segment.agent,
                     "model": segment.model or "",
                     "reasoning": segment.reasoning or "",
@@ -553,6 +555,8 @@ class AgentService:
                         "created_at": self._timestamp(external_message.created_at) if external_message else None,
                     }
                     matched_turn = None
+                    if item["role"] == "user":
+                        current_metadata = metadata
                     if item["role"] == "user" and submitted.get(item["content"]):
                         matched_turn = submitted[item["content"]].pop(0)
                         display = {
