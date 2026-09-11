@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -14,10 +15,11 @@ class SdkCodexBackend:
     captures the exact notification contract of the pinned SDK version.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, session_logs_dir: Path | None = None) -> None:
         self._codex = None
         self._threads: dict[str, Any] = {}
         self._capabilities = Capabilities(streaming=True, activity=True, steer=False, interrupt=False)
+        self._session_logs_dir = session_logs_dir or Path.home() / ".codex" / "sessions"
 
     @property
     def capabilities(self) -> Capabilities:
@@ -109,9 +111,14 @@ class SdkCodexBackend:
         return native_id
 
     async def thread_history(self, native_thread_id: str) -> list[dict[str, str]]:
+        # Codex Desktop appends its live transcript to the local session journal.
+        # It is more current than thread/read while another desktop client owns
+        # the thread writer lock, and reading it does not resume or lock a thread.
+        journal_history = self._journal_history(native_thread_id)
+        if journal_history:
+            return journal_history
         codex = await self._client()
-        # Reading through the app-server client deliberately avoids resuming a
-        # thread: another Codex client can be actively writing to it.
+        # Keep the SDK path for sessions without a local Desktop journal.
         response = await codex._client.thread_read(native_thread_id, include_turns=True)
         messages: list[dict[str, str]] = []
         for turn in response.thread.turns:
@@ -127,6 +134,43 @@ class SdkCodexBackend:
                     if text:
                         messages.append({"role": "user", "content": text})
         return messages
+
+    def _journal_history(self, native_thread_id: str) -> list[dict[str, str]]:
+        """Read the newest complete local Desktop transcript for one thread.
+
+        The journal is append-only, so a partially written final line is ignored.
+        Only user and assistant text is returned; settings, tools, and developer
+        instructions are deliberately never exposed through Agent Web.
+        """
+        if not native_thread_id.replace("-", "").isalnum() or not self._session_logs_dir.is_dir():
+            return []
+        try:
+            candidates = list(self._session_logs_dir.rglob(f"*{native_thread_id}*.jsonl"))
+            if not candidates:
+                return []
+            path = max(candidates, key=lambda item: item.stat().st_mtime_ns)
+            messages: list[dict[str, str]] = []
+            with path.open(encoding="utf-8") as journal:
+                for line in journal:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = item.get("payload", {})
+                    if item.get("type") != "response_item" or payload.get("type") != "message":
+                        continue
+                    role = payload.get("role")
+                    if role not in {"user", "assistant"}:
+                        continue
+                    text = "\n".join(
+                        part["text"] for part in payload.get("content", [])
+                        if part.get("type") in {"input_text", "output_text"} and part.get("text")
+                    )
+                    if text:
+                        messages.append({"role": role, "content": text})
+            return messages
+        except OSError:
+            return []
 
     async def list_threads(self, limit: int = 100) -> list[dict[str, str | None]]:
         codex = await self._client()
