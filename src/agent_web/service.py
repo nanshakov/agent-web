@@ -719,6 +719,7 @@ class AgentService:
 
     async def enqueue_turn(self, session_id: str, prompt: str, request_id: str,
                            uploads: list[object] | None = None) -> tuple[Turn, bool]:
+        new_title: str | None = None
         async with self.session_factory() as db:
             existing = await db.scalar(select(Turn).where(Turn.client_request_id == request_id))
             if existing:
@@ -733,6 +734,7 @@ class AgentService:
             attachments = await store_uploads(Path(project.path), session.id, uploads or [])
             if session.title is None:
                 session.title = chat_title(prompt or (str(attachments[0]["name"]) if attachments else ""))
+                new_title = session.title
             submitted = agent_prompt(Path(project.path), prompt, attachments)
             previous_turn = await db.scalar(
                 select(Turn.id).where(
@@ -756,6 +758,18 @@ class AgentService:
             db.add(AuditEvent(kind="turn.started", subject_id=turn.id, detail=detail))
             await db.commit()
             await db.refresh(turn)
+        if new_title is not None:
+            backend = self.backends.get(segment.agent)
+            rename_thread = getattr(backend, "set_thread_title", None)
+            if rename_thread is not None:
+                try:
+                    await rename_thread(segment.native_thread_id, new_title)
+                except Exception:
+                    logger.warning(
+                        "Could not synchronize the native thread title for %s",
+                        segment.native_thread_id,
+                        exc_info=True,
+                    )
         logger.info(
             "turn_trace event=started turn_id=%s session_id=%s segment_id=%s agent=%s",
             turn.id, session.id, segment.id, segment.agent,

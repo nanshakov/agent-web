@@ -139,6 +139,14 @@ class SdkCodexBackend:
             for thread in response.data
         ]
 
+    async def set_thread_title(self, native_thread_id: str, title: str) -> None:
+        thread = self._threads.get(native_thread_id)
+        if thread is not None:
+            await thread.set_name(title)
+            return
+        codex = await self._client()
+        await codex._client.thread_set_name(native_thread_id, title)
+
     async def run_turn(
         self, native_thread_id: str, prompt: str, *, sandbox: str,
         model: str | None = None, reasoning: str | None = None,

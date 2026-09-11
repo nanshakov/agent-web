@@ -20,6 +20,7 @@ class FakeCodex:
         self.prompts = []
         self.runs = []
         self.starts = []
+        self.titles = []
         self.started_threads = 0
 
     async def health(self):
@@ -44,6 +45,9 @@ class FakeCodex:
 
     async def list_threads(self, limit=100):
         return []
+
+    async def set_thread_title(self, native_thread_id, title):
+        self.titles.append({"thread": native_thread_id, "title": title})
 
     async def run_turn(self, native_thread_id, prompt, *, sandbox, model=None, reasoning=None):
         self.prompts.append(prompt)
@@ -514,13 +518,14 @@ def test_global_codex_defaults_and_custom_instructions_apply_to_new_chat(tmp_pat
         chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
         completed_turn(client, client.post(
             f"/api/v1/sessions/{chat['id']}/turns",
-            json={"prompt": "Implement it", "client_request_id": "global-settings-turn"},
+            json={"prompt": "Как работает Alois Roots", "client_request_id": "global-settings-turn"},
         ))
 
     assert saved.status_code == 200
     assert backend.starts[-1] == {"model": "other-model", "reasoning": "high"}
     assert "Use Git and keep tests focused." in backend.prompts[-1]
-    assert backend.prompts[-1].endswith("Current user request:\nImplement it")
+    assert backend.prompts[-1].endswith("Current user request:\nКак работает Alois Roots")
+    assert backend.titles == [{"thread": "fixture-thread", "title": "Как работает Alois Roots"}]
     assert backend.runs[-1]["model"] == "other-model"
     assert backend.runs[-1]["reasoning"] == "high"
 
