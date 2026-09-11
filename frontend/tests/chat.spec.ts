@@ -80,6 +80,9 @@ async function fixture(page: Page) {
     await route.fulfill({ json: body });
   });
   return {
+    setMessages(value: typeof messages) {
+      messages = value;
+    },
     get connections() {
       return connections;
     },
@@ -110,6 +113,91 @@ async function fixture(page: Page) {
     },
   };
 }
+test("mobile tool activity updates without replacing text and survives reconnect and reload", async ({
+  page,
+}) => {
+  const f = await fixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/projects/p1/chats/s1");
+  await expect.poll(() => f.connections).toBeGreaterThan(0);
+  const command = {
+    id: "c1",
+    kind: "commandExecution",
+    label: "Command",
+    status: "running",
+  };
+  const mcp = {
+    id: "m1",
+    kind: "mcpToolCall",
+    label: "MCP · docs / search",
+    status: "running",
+  };
+  const send = (activities: unknown[]) =>
+    f.emit({
+      type: "turn.activity",
+      turn_id: "t1",
+      status: "running",
+      content: "Checking the project",
+      activities,
+    });
+  send([command]);
+  await expect(page.locator(".activity-current")).toHaveText(
+    "Command — Running",
+  );
+  send([{ ...command, status: "completed" }, mcp]);
+  await expect(page.locator(".activity-current")).toHaveText(
+    "MCP · docs / search — Running",
+  );
+  await expect(
+    page.getByText("Checking the project", { exact: true }),
+  ).toHaveCount(1);
+  await page.locator(".turn-activity summary").click();
+  await expect(page.locator(".turn-activity li")).toHaveText(
+    "✓ Command — Completed",
+  );
+  const count = f.connections;
+  f.disconnect();
+  await expect.poll(() => f.connections).toBeGreaterThan(count);
+  send([{ ...command, status: "completed" }, mcp]);
+  await expect(page.locator(".activity-current")).toHaveCount(1);
+  const activities = [
+    { ...command, status: "completed" },
+    { ...mcp, status: "failed" },
+  ];
+  f.setMessages([
+    {
+      role: "assistant",
+      turn_id: "t1",
+      content: "Finished checking",
+      status: "completed",
+      activities,
+    },
+  ]);
+  f.emit({
+    type: "turn.completed",
+    turn_id: "t1",
+    status: "completed",
+    content: "Finished checking",
+    activities,
+  });
+  await expect(page.locator(".activity-current")).toHaveCount(0);
+  await expect(page.locator(".turn-activity summary")).toHaveText(
+    "2 recent actions · errors",
+  );
+  await page.reload();
+  await page.locator(".turn-activity summary").click();
+  await expect(page.locator(".turn-activity li")).toHaveCount(2);
+  await expect(
+    page.locator(".turn-activity li[data-status=failed]"),
+  ).toContainText("MCP · docs / search — Failed");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
+    390,
+  );
+  await page.screenshot({
+    path: "test-results/mobile-tool-activity.png",
+    fullPage: true,
+  });
+});
 test("addressable chat restores settings, navigation, browser history and unavailable links", async ({
   page,
 }) => {

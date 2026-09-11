@@ -359,6 +359,37 @@ def test_session_websocket_replays_turn_state(tmp_path: Path):
     }
 
 
+def test_tool_activity_survives_websocket_replay_and_server_restart(tmp_path: Path):
+    class ActivityCodex(FakeCodex):
+        capabilities = Capabilities(streaming=True, activity=True)
+
+        async def stream_turn(self, native_thread_id, prompt, *, on_delta, on_activity, **kwargs):
+            await on_delta("Working text")
+            await on_activity({"id": "tool1", "kind": "mcpToolCall", "label": "MCP · docs / search", "status": "running"})
+            await on_activity({"id": "tool1", "kind": "mcpToolCall", "label": "MCP · docs / search", "status": "completed"})
+            await on_activity({"id": "tool2", "kind": "commandExecution", "label": "Command", "status": "running"})
+            return "Done"
+
+    root = tmp_path / "projects"
+    repo = root / "sample"
+    (repo / ".git").mkdir(parents=True)
+    settings = Settings(data_dir=tmp_path / "data", allowed_roots=(root,))
+    app = create_app(settings, backend=ActivityCodex())
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects", json={"name": "Sample", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        turn = completed_turn(client, client.post(f"/api/v1/sessions/{chat['id']}/turns", json={"prompt": "test", "client_request_id": "activity"}))
+        assert turn["status"] == "completed"
+        with client.websocket_connect(f"/api/v1/ws/sessions/{chat['id']}") as websocket:
+            event = websocket.receive_json()
+        assert event["content"] == "Done"
+        assert [item["status"] for item in event["activities"]] == ["completed", "interrupted"]
+    with TestClient(create_app(settings, backend=ActivityCodex())) as client:
+        messages = client.get(f"/api/v1/sessions/{chat['id']}/messages").json()
+        answer = next(m for m in messages if m.get("turn_id") == turn["id"] and m["role"] == "assistant")
+        assert answer["activities"] == event["activities"]
+
+
 def test_chat_export_inlines_text_packages_images_and_removes_attachments(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"

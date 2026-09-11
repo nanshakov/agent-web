@@ -653,3 +653,50 @@ form > label textarea {
   margin: 0 0.55em 0 -1.45em;
   accent-color: var(--accent);
 }
+.turn-activity {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.activity-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.turn-activity summary {
+  cursor: pointer;
+  padding: 8px 0;
+  min-height: 36px;
+}
+.turn-activity ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 4px 0;
+}
+.turn-activity li {
+  padding: 4px 0;
+}
+.turn-activity li[data-status="failed"] {
+  color: #b54738;
+}
+.activity-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: activity-spin 1s linear infinite;
+}
+@keyframes activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-spinner {
+    animation: none;
+  }
+}

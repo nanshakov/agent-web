@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from agent_web.attachments import agent_prompt, attachment_directory, load_metadata, store_uploads
 from agent_web.cline import ClineHistory
 from agent_web.codex.base import CodexBackend
+from agent_web.activity import Activity, finish_activity, update_activity
 from agent_web.db.models import (
     AgentSegment,
     AgentSession,
@@ -47,6 +48,7 @@ class TurnEvent(TypedDict):
     status: str
     content: str
     delta: NotRequired[str]
+    activities: NotRequired[list[Activity]]
 
 
 def chat_title(prompt: str) -> str:
@@ -608,6 +610,18 @@ class AgentService:
                 "turn_trace event=history_contains_running session_id=%s messages=%s running_turns=%s",
                 session_id, len(messages), running_turns,
             )
+        # Native history can contain several commentary messages for a turn.
+        # Attach its activity once, to the last assistant message.
+        by_turn = {turn.id: turn for turn in stored_turns}
+        attached = set()
+        for message in reversed(messages):
+            turn_id = message.get("turn_id")
+            if message["role"] != "assistant" or turn_id in attached or turn_id not in by_turn:
+                continue
+            attached.add(turn_id)
+            stored = by_turn[turn_id]
+            activities = json.loads(stored.activity_json or "[]")
+            message["activities"] = activities if stored.status == "running" else finish_activity(activities)
         return messages
 
     async def export_context(self, session_id: str) -> dict[str, object]:
@@ -807,6 +821,7 @@ class AgentService:
             "turn_trace event=dispatched turn_id=%s session_id=%s segment_id=%s agent=%s",
             turn.id, session.id, segment.id, segment.agent,
         )
+        activities: list[Activity] = []
         try:
             backend = self.backends.get(segment.agent)
             if backend is None:
@@ -820,12 +835,28 @@ class AgentService:
                 submitted_prompt = self._handoff_prompt(earlier, submitted_prompt)
             content = ""
 
+            async def on_activity(activity: Activity) -> None:
+                nonlocal activities
+                activities = update_activity(activities, activity)
+                async with self.session_factory() as activity_db:
+                    active_turn = await activity_db.get(Turn, turn.id)
+                    if active_turn is None:
+                        raise LookupError("Turn not found")
+                    active_turn.activity_json = json.dumps(activities)
+                    active_turn.response = content
+                    await activity_db.commit()
+                self._publish_turn_event({
+                    "type": "turn.activity", "turn_id": turn.id, "session_id": turn.session_id,
+                    "status": "running", "content": content, "activities": activities,
+                })
+
             async def on_delta(delta: str) -> None:
                 nonlocal content
                 content += delta
                 self._publish_turn_event({
                     "type": "turn.delta", "turn_id": turn.id, "session_id": turn.session_id,
                     "status": "running", "content": content, "delta": delta,
+                    "activities": activities,
                 })
 
             async def run_backend_turn() -> str:
@@ -835,6 +866,7 @@ class AgentService:
                         segment.native_thread_id, submitted_prompt,
                         sandbox=turn.sandbox or segment.sandbox,
                         model=turn.model, reasoning=turn.reasoning, on_delta=on_delta,
+                        **({"on_activity": on_activity} if backend.capabilities.activity else {}),
                     )
                 return await backend.run_turn(
                     segment.native_thread_id, submitted_prompt,
@@ -869,6 +901,8 @@ class AgentService:
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)
                 stored.response, stored.status = response, "completed"
+                activities = finish_activity(activities)
+                stored.activity_json = json.dumps(activities)
                 active = await self._active_segment(db, session.id)
                 if active.id == segment.id:
                     active.handoff_pending = False
@@ -887,7 +921,7 @@ class AgentService:
                 )
                 self._publish_turn_event({
                     "type": "turn.completed", "turn_id": turn.id, "session_id": turn.session_id,
-                    "status": "completed", "content": response,
+                    "status": "completed", "content": response, "activities": activities,
                 })
                 return stored
         except Exception as exc:
@@ -898,6 +932,8 @@ class AgentService:
             async with self.session_factory() as db:
                 stored = await db.get(Turn, turn.id)
                 stored.status = "failed"
+                activities = finish_activity(activities)
+                stored.activity_json = json.dumps(activities)
                 stored.response = (
                     f"Agent run failed: {type(exc).__name__}: {exc}\n\n"
                     f"Traceback:\n{traceback.format_exc()}"
@@ -912,7 +948,7 @@ class AgentService:
                 await db.commit()
                 self._publish_turn_event({
                     "type": "turn.failed", "turn_id": turn.id, "session_id": turn.session_id,
-                    "status": "failed", "content": stored.response,
+                    "status": "failed", "content": stored.response, "activities": activities,
                 })
                 return stored
         finally:

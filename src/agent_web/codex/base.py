@@ -11,6 +11,7 @@ class Capabilities:
     steer: bool = False
     interrupt: bool = False
     sandboxes: tuple[str, ...] = ("read_only", "workspace_write", "full_access")
+    activity: bool = False
 
 
 class CodexBackend(Protocol):

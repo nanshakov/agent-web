@@ -17,6 +17,7 @@ export interface Session extends AgentSettings {
   last_activity_at: string;
 }
 export interface Message {
+  activities?: Activity[];
   role: string;
   content: string;
   rendered_content?: string;
@@ -28,11 +29,18 @@ export interface Message {
   attachments?: { name: string; kind: string }[];
 }
 export interface TurnEvent {
+  activities?: Activity[];
   type: string;
   turn_id: string;
   status: string;
   content: string;
   rendered_content?: string;
+}
+export interface Activity {
+  id: string;
+  kind: string;
+  label: string;
+  status: "running" | "completed" | "failed" | "interrupted";
 }
 export interface Agent {
   ready: boolean;

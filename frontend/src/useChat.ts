@@ -132,6 +132,7 @@ export function useChat(sessionId: string | undefined) {
       status: stream.status,
       content: stream.content || "Agent is working…",
       rendered_content: stream.rendered_content,
+      activities: stream.activities,
     };
     if (index >= 0) messages[index] = message;
     else if (!persisted) messages.push(message);

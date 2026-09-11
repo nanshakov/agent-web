@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { SettingsFields } from "./Settings";
 import { useChat } from "./useChat";
+import { TurnActivity } from "./Activity";
 
 export function Chat({
   project,
@@ -225,6 +226,12 @@ export function Chat({
                 ))}
               </div>
             ) : null}
+            {m.role === "assistant" && (
+              <TurnActivity
+                items={m.activities}
+                running={m.status === "running"}
+              />
+            )}
             {m.created_at && (
               <time dateTime={m.created_at}>
                 {new Date(m.created_at).toLocaleString()}

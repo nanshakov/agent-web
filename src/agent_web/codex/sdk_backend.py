@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from agent_web.codex.base import Capabilities
+from agent_web.activity import Activity, item_activity
 
 
 class SdkCodexBackend:
@@ -16,7 +17,7 @@ class SdkCodexBackend:
     def __init__(self) -> None:
         self._codex = None
         self._threads: dict[str, Any] = {}
-        self._capabilities = Capabilities(streaming=True, steer=False, interrupt=False)
+        self._capabilities = Capabilities(streaming=True, activity=True, steer=False, interrupt=False)
 
     @property
     def capabilities(self) -> Capabilities:
@@ -171,6 +172,7 @@ class SdkCodexBackend:
         self, native_thread_id: str, prompt: str, *, sandbox: str,
         on_delta: Callable[[str], Awaitable[None]], model: str | None = None,
         reasoning: str | None = None,
+        on_activity: Callable[[Activity], Awaitable[None]] | None = None,
     ) -> str:
         """Forward Codex agent-message deltas while collecting the final response."""
         from openai_codex import Sandbox  # type: ignore[import-not-found]
@@ -178,6 +180,7 @@ class SdkCodexBackend:
             AgentMessageDeltaNotification,
             AgentMessageThreadItem,
             ItemCompletedNotification,
+            ItemStartedNotification,
             MessagePhase,
             ReasoningEffort,
             TurnCompletedNotification,
@@ -196,6 +199,11 @@ class SdkCodexBackend:
         fallback_response: str | None = None
         async for event in handle.stream():
             payload = event.payload
+            if on_activity is not None and isinstance(payload, (ItemStartedNotification, ItemCompletedNotification)):
+                item = payload.item.root if hasattr(payload.item, "root") else payload.item
+                activity = item_activity(item, completed=isinstance(payload, ItemCompletedNotification))
+                if activity is not None:
+                    await on_activity(activity)
             if isinstance(payload, AgentMessageDeltaNotification):
                 await on_delta(payload.delta)
             elif isinstance(payload, ItemCompletedNotification):

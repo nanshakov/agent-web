@@ -82,6 +82,7 @@ class Turn(Base):
     sandbox: Mapped[str | None] = mapped_column(String(40), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="queued")
     response: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    activity_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
