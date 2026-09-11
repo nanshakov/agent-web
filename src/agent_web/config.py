@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
@@ -19,6 +19,7 @@ class Settings:
     port: int = 8765
     update_repository_url: str | None = None
     update_branch: str = "main"
+    telemetry: dict = field(default_factory=dict, repr=False)
 
     @property
     def database_url(self) -> str:

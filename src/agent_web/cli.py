@@ -23,6 +23,7 @@ def load_settings(data_dir: Path, *, host: str = "127.0.0.1", port: int = 8765) 
         port=port,
         update_repository_url=payload.get("update_repository_url"),
         update_branch=payload.get("update_branch", "main"),
+        telemetry=payload.get("telemetry") or {},
     )
 
 

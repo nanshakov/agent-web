@@ -22,6 +22,7 @@ from agent_web.db.database import create_database, migrate_database
 from agent_web.markdown import render_markdown
 from agent_web.service import AgentService, chat_title
 from agent_web.updater import UpdateError, Updater
+from agent_web.telemetry import run_telemetry
 
 
 logger = logging.getLogger(__name__)
@@ -134,11 +135,13 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         import_task = asyncio.create_task(periodically_import(service.import_existing_codex_sessions))
         cline_import_task = asyncio.create_task(import_cline_sessions())
         update_task = asyncio.create_task(check_updates())
+        telemetry_task = asyncio.create_task(run_telemetry(settings, session_factory))
         yield
         import_task.cancel()
         cline_import_task.cancel()
         update_task.cancel()
-        await asyncio.gather(import_task, cline_import_task, update_task, return_exceptions=True)
+        telemetry_task.cancel()
+        await asyncio.gather(import_task, cline_import_task, update_task, telemetry_task, return_exceptions=True)
         await engine.dispose()
         if trace_handler is not None:
             logging.getLogger(TURN_TRACE_LOGGER).removeHandler(trace_handler)

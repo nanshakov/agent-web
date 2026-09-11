@@ -179,6 +179,39 @@ def test_project_session_and_turn_lifecycle(tmp_path: Path):
         assert legacy_sessions[0]["title"] == "hello"
 
 
+def test_configured_telemetry_counts_api_requests_once(tmp_path: Path, monkeypatch):
+    import json
+    import threading
+    import agent_web.telemetry as telemetry
+
+    sent = threading.Event()
+    async def send(*args):
+        sent.set()
+        return True
+    monkeypatch.setattr(telemetry, "send_payload", send)
+    repo = tmp_path / "project"
+    repo.mkdir()
+    settings = Settings(data_dir=tmp_path / "data", allowed_roots=(repo,), telemetry={
+        "endpoint": "https://otlp.grafana.net/otlp", "instance_id": "123", "token": "secret",
+    })
+    app = create_app(settings, backend=FakeCodex())
+    with TestClient(app) as client:
+        assert sent.wait(5), "Configured exporter must start with the application"
+        project = client.post("/api/v1/projects", json={"name": "Private", "path": str(repo)}).json()
+        chat = client.post(f"/api/v1/projects/{project['id']}/sessions").json()
+        request = {"prompt": "PRIVATE_PROMPT", "client_request_id": "telemetry-retry"}
+        url = f"/api/v1/sessions/{chat['id']}/turns"
+        completed_turn(client, client.post(url, json=request))
+        completed_turn(client, client.post(url, json=request))
+        state = json.loads((settings.data_dir / "telemetry-state.json").read_text())
+        payload = client.portal.call(telemetry.build_payload, state, app.state.service.session_factory)
+        metrics = {m["name"]: m for m in payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]}
+        for name in ("agent_web_chats_created", "agent_web_messages_sent", "agent_web_turns_finished"):
+            assert sum(p["asDouble"] for p in metrics[name]["sum"]["dataPoints"]) == 1
+        assert "PRIVATE_PROMPT" not in json.dumps(payload)
+        assert str(repo) not in json.dumps(payload)
+
+
 def test_sessions_are_ordered_by_latest_activity(tmp_path: Path):
     root = tmp_path / "projects"
     repo = root / "sample"
